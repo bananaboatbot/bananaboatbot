@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"log"
+	"math/big"
 	"sync"
 
 	"github.com/yuin/gopher-lua"
@@ -151,7 +153,36 @@ func (b *BananaBoatBot) ReloadLua() {
 	b.luaMutex.Unlock()
 }
 
+func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
+	i := luaState.ToInt(1)
+	var r *big.Int
+	var err error
+	if i != 1 {
+		r, err = rand.Int(rand.Reader, big.NewInt(int64(i)))
+	}
+	if err != nil {
+		panic(err)
+	}
+	res := r.Int64() + 1
+	ln := lua.LNumber(res)
+	luaState.Push(ln)
+	return 1
+}
+
+func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
+	exports := map[string]lua.LGFunction{
+		"random": b.luaLibRandom,
+	}
+	mod := luaState.SetFuncs(luaState.NewTable(), exports)
+	luaState.Push(mod)
+	return 1
+}
+
 func NewBananaBoatBot(luaFile string) *BananaBoatBot {
+
+	if len(luaFile) == 0 {
+		log.Fatal("Please specify script using -lua flag")
+	}
 
 	b := BananaBoatBot{
 		handlers: make(map[string]*lua.LFunction),
@@ -163,9 +194,7 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 		username: "bananarama",
 	}
 
-	if len(luaFile) == 0 {
-		log.Fatal("Please specify script using -lua flag")
-	}
+	b.luaState.PreloadModule("bananaboat", b.luaLibLoader)
 
 	tbl := b.loadLuaCommon()
 
