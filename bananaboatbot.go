@@ -219,13 +219,37 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 					portInt = int(port)
 				}
 
+				var nick string
+				lv = serverSettings.RawGetString("nick")
+				if lv, ok := lv.(lua.LString); ok {
+					nick = lua.LVAsString(lv)
+				} else {
+					nick = b.nick
+				}
+
+				var realname string
+				lv = serverSettings.RawGetString("realname")
+				if lv, ok := lv.(lua.LString); ok {
+					realname = lua.LVAsString(lv)
+				} else {
+					realname = b.realname
+				}
+
+				var username string
+				lv = serverSettings.RawGetString("username")
+				if lv, ok := lv.(lua.LString); ok {
+					username = lua.LVAsString(lv)
+				} else {
+					username = b.username
+				}
+
 				svr := NewIrcServer(&IrcServerSettings{
 					Host:     host,
 					Port:     portInt,
 					TLS:      tls,
-					Nick:     b.nick,
-					Realname: b.realname,
-					Username: b.username,
+					Nick:     nick,
+					Realname: realname,
+					Username: username,
 				})
 
 				b.servers[lua.LVAsString(serverName)] = svr
