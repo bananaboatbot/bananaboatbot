@@ -5,11 +5,13 @@ import (
 	"log"
 	"math/big"
 	"sync"
+	"time"
 
 	"github.com/yuin/gopher-lua"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
+// BananaBoatBot contains config & state of the bot
 type BananaBoatBot struct {
 	handlers      map[string]*lua.LFunction
 	handlersMutex sync.RWMutex
@@ -20,88 +22,125 @@ type BananaBoatBot struct {
 	luaState      *lua.LState
 	luaMutex      sync.Mutex
 	servers       map[string]*IrcServer
+	serverErrors  chan IrcServerError
 }
 
-// XXX: probably unused
+// Close handles shutdown-related tasks
 func (b *BananaBoatBot) Close() {
 	log.Print("Shutting down")
 	b.luaState.Close()
 }
 
-func (b *BananaBoatBot) Loop() {
-	for svrName, svr := range b.servers {
-		go func() {
-			for {
-				func() {
+// handleHandlers invokes any registered Lua handlers for a command
+func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
+	// Get read mutex for handlers map
+	b.handlersMutex.RLock()
+	// If we have a function corresponding to this command...
+	if luaFunction, ok := b.handlers[msg.Command]; ok {
+		// Release read mutex for handlers
+		b.handlersMutex.RUnlock()
+		// Deferred release of lua state mutex
+		defer b.luaMutex.Unlock()
 
-					msg := <-svr.Input
-					log.Print(msg)
+		// Make empty list of parameters to pass to Lua
+		luaParams := make([]lua.LValue, len(msg.Params)+4)
+		// First parameter is the name of the server
+		luaParams[0] = lua.LString(svrName)
+		// Following three parameters are nick/user/host if set
+		if msg.Prefix != nil {
+			luaParams[1] = lua.LString(msg.Prefix.Name)
+			luaParams[2] = lua.LString(msg.Prefix.User)
+			luaParams[3] = lua.LString(msg.Prefix.Host)
+		}
+		// Fifth parameter onwards is unpacked parameters of the irc.Message
+		pi := 0
+		for i := 4; i < len(luaParams); i++ {
+			luaParams[i] = lua.LString(msg.Params[pi])
+			pi++
+		}
 
-					b.handlersMutex.RLock()
-					if luaFunction, ok := b.handlers[msg.Command]; ok {
-
-						b.handlersMutex.RUnlock()
-						defer b.luaMutex.Unlock()
-
-						luaParams := make([]lua.LValue, len(msg.Params)+5)
-						luaParams[0] = lua.LString(svrName)
-						if msg.Prefix != nil {
-							luaParams[1] = lua.LString(msg.Prefix.Name)
-							luaParams[2] = lua.LString(msg.Prefix.User)
-							luaParams[3] = lua.LString(msg.Prefix.Host)
-						}
-						luaParams[4] = lua.LString(msg.Command)
-						pi := 0
-						for i := 5; i < len(luaParams); i++ {
-							luaParams[i] = lua.LString(msg.Params[pi])
-							pi++
-						}
-
-						b.luaMutex.Lock()
-
-						err := b.luaState.CallByParam(lua.P{
-							Fn:      luaFunction,
-							NRet:    1,
-							Protect: true},
-							luaParams...)
-						if err != nil {
-							log.Printf("Handler for %s failed: %s", msg.Command, err)
-						}
-						res := b.luaState.CheckTable(-1)
-						res.ForEach(func(index lua.LValue, messageL lua.LValue) {
-							var command string
-							var params []string
-							if message, ok := messageL.(*lua.LTable); ok {
-								lv := message.RawGetString("command")
-								command = lua.LVAsString(lv)
-								lv = message.RawGetString("params")
-								if paramsT, ok := lv.(*lua.LTable); ok {
-									params = make([]string, paramsT.MaxN())
-									paramsIndex := 0
-									paramsT.ForEach(func(index lua.LValue, paramL lua.LValue) {
-										params[paramsIndex] = lua.LVAsString(paramL)
-										paramsIndex++
-									})
-								} else {
-									params = make([]string, 0)
-								}
-								ircMessage := &irc.Message{
-									Command: command,
-									Params:  params,
-								}
-								svr.Output <- *ircMessage
-							}
-						})
-
-						b.luaState.SetTop(0)
-					} else {
-						b.handlersMutex.RUnlock()
-					}
-				}()
+		// Get Lua mutex
+		b.luaMutex.Lock()
+		// Call function
+		err := b.luaState.CallByParam(lua.P{
+			Fn:      luaFunction,
+			NRet:    1,
+			Protect: true},
+			luaParams...)
+		// Handle failures
+		if err != nil {
+			log.Printf("Handler for %s failed: %s", msg.Command, err)
+		}
+		// Get table result (XXX: also allow nil?)
+		res := b.luaState.CheckTable(-1)
+		// For each numeric index in the table result...
+		res.ForEach(func(index lua.LValue, messageL lua.LValue) {
+			var command string
+			var params []string
+			// Get the nested table..
+			if message, ok := messageL.(*lua.LTable); ok {
+				// Get 'command' string from table
+				lv := message.RawGetString("command")
+				command = lua.LVAsString(lv)
+				// Get 'params' table from table
+				lv = message.RawGetString("params")
+				if paramsT, ok := lv.(*lua.LTable); ok {
+					// Make a list of parameters
+					params = make([]string, paramsT.MaxN())
+					// Copy parameters from Lua
+					paramsIndex := 0
+					paramsT.ForEach(func(index lua.LValue, paramL lua.LValue) {
+						params[paramsIndex] = lua.LVAsString(paramL)
+						paramsIndex++
+					})
+				} else {
+					// No parameters, make an empty array
+					params = make([]string, 0)
+				}
+				// Create irc.Message
+				ircMessage := &irc.Message{
+					Command: command,
+					Params:  params,
+				}
+				// Send it to the server
+				b.servers[svrName].Output <- *ircMessage
 			}
-		}()
+		})
+
+		// Clear stack
+		b.luaState.SetTop(0)
+	} else {
+		// Release handlers mutex
+		b.handlersMutex.RUnlock()
 	}
-	select {}
+}
+
+// LoopOnce is called repeatedly to handle all basic processing
+func (b *BananaBoatBot) LoopOnce() {
+	// Iterate over servers...
+	for svrName, svr := range b.servers {
+		select {
+		// Try to read input
+		case msg := <-svr.Input:
+			// Log message
+			log.Print(msg)
+			// Call handler if necessary
+			b.handleHandlers(svrName, msg)
+		default:
+			continue
+		}
+	}
+	// Process any errors we might have received
+	select {
+	case serverErr := <-b.serverErrors:
+		// Log the error
+		log.Print(serverErr.Error)
+		// Wait - XXX FIXME
+		time.Sleep(time.Second * 5)
+		// Try reconnect to the server
+		go b.servers[serverErr.Name].Dial(b.serverErrors)
+	default:
+	}
 }
 
 func (b *BananaBoatBot) loadLuaCommon() *lua.LTable {
@@ -145,6 +184,7 @@ func (b *BananaBoatBot) loadLuaCommon() *lua.LTable {
 	return tbl
 }
 
+// ReloadLua deals with reloading Lua parts
 func (b *BananaBoatBot) ReloadLua() {
 	b.luaMutex.Lock()
 	b.loadLuaCommon()
@@ -153,6 +193,7 @@ func (b *BananaBoatBot) ReloadLua() {
 	b.luaMutex.Unlock()
 }
 
+// luaLibRandom provides access to cryptographic random numbers in Lua
 func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 	i := luaState.ToInt(1)
 	var r *big.Int
@@ -169,6 +210,7 @@ func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 	return 1
 }
 
+// luaLibLoader returns a table containing our Lua library functions
 func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	exports := map[string]lua.LGFunction{
 		"random": b.luaLibRandom,
@@ -178,47 +220,56 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	return 1
 }
 
+// NewBananaBoatBot creates a new BananaBoatBot
 func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 
+	// We require a path to some script to load
 	if len(luaFile) == 0 {
 		log.Fatal("Please specify script using -lua flag")
 	}
 
+	// Create BananaBoatBot
 	b := BananaBoatBot{
-		handlers: make(map[string]*lua.LFunction),
-		luaFile:  luaFile,
-		luaState: lua.NewState(),
-		nick:     "BananaBoatBot",
-		realname: "Banana Boat Bot",
-		servers:  make(map[string]*IrcServer),
-		username: "bananarama",
+		handlers:     make(map[string]*lua.LFunction),
+		luaFile:      luaFile,
+		luaState:     lua.NewState(),
+		nick:         "BananaBoatBot",
+		realname:     "Banana Boat Bot",
+		servers:      make(map[string]*IrcServer),
+		serverErrors: make(chan IrcServerError),
+		username:     "bananarama",
 	}
 
+	// Provide access to our library functions in Lua
 	b.luaState.PreloadModule("bananaboat", b.luaLibLoader)
 
+	// Call Lua script and get a table result
 	tbl := b.loadLuaCommon()
 
+	// Get 'servers' from table
 	lv := tbl.RawGetString("servers")
+	// Get table value
 	if serverTbl, ok := lv.(*lua.LTable); ok {
+		// Iterate over nested tables...
 		serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
-
+			// Get nested table
 			if serverSettings, ok := serverSettingsLV.(*lua.LTable); ok {
-
+				// Get 'server' string from table
 				lv = serverSettings.RawGetString("server")
 				host := lua.LVAsString(lv)
-
+				// Get 'tls' bool from table
 				var tls bool
 				lv = serverSettings.RawGetString("tls")
 				if lv, ok := lv.(lua.LBool); ok {
 					tls = bool(lv)
 				}
-
+				// Get 'port' from table
 				var portInt int
 				lv = serverSettings.RawGetString("port")
 				if port, ok := lv.(lua.LNumber); ok {
 					portInt = int(port)
 				}
-
+				// Get 'nick' from table - use default if unavailable
 				var nick string
 				lv = serverSettings.RawGetString("nick")
 				if lv, ok := lv.(lua.LString); ok {
@@ -226,7 +277,7 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 				} else {
 					nick = b.nick
 				}
-
+				// Get 'realname' from table - use default if unavailable
 				var realname string
 				lv = serverSettings.RawGetString("realname")
 				if lv, ok := lv.(lua.LString); ok {
@@ -234,7 +285,7 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 				} else {
 					realname = b.realname
 				}
-
+				// Get 'username' from table - use default if unavailable
 				var username string
 				lv = serverSettings.RawGetString("username")
 				if lv, ok := lv.(lua.LString); ok {
@@ -242,8 +293,9 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 				} else {
 					username = b.username
 				}
-
-				svr := NewIrcServer(&IrcServerSettings{
+				// Create new IRC server
+				serverNameStr := lua.LVAsString(serverName)
+				svr := NewIrcServer(serverNameStr, &IrcServerSettings{
 					Host:     host,
 					Port:     portInt,
 					TLS:      tls,
@@ -251,17 +303,17 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 					Realname: realname,
 					Username: username,
 				})
-
-				b.servers[lua.LVAsString(serverName)] = svr
+				// Set server to map
+				b.servers[serverNameStr] = svr
 			}
 		})
 	}
-
+	// Clear Lua stack
 	b.luaState.SetTop(0)
-
+	// Try to connect all servers
 	for _, server := range b.servers {
-		server.Dial()
+		go server.Dial(b.serverErrors)
 	}
-
+	// Return BananaBoatBot
 	return &b
 }

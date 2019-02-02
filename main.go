@@ -2,8 +2,8 @@ package main
 
 import (
 	"flag"
-	"net/http"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 
@@ -11,17 +11,22 @@ import (
 )
 
 func main() {
+	// Set up and parse commandline flags
 	luaFile := flag.String("lua", "", "Path to Lua script")
 	ringSize := flag.Int("ring-size", 100, "Number of entries in log ringbuffer")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
 
+	// Set up custom logger for maintaining log in ringbuffer
 	logger := NewLogger(&LoggerConfig{
 		ringSize: *ringSize,
 	})
 	log.SetOutput(logger)
 
+	// Create BananaBoatBot
 	b := NewBananaBoatBot(*luaFile)
+
+	// Setup handlers for webserver
 	http.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
 		b.ReloadLua()
 	})
@@ -41,11 +46,21 @@ func main() {
 		}
 	})
 	http.Handle("/metrics", promhttp.Handler())
-	defer b.Close()
+	// Start webserver
 	go http.ListenAndServe(*webAddr, nil)
-	go b.Loop()
 
-	sigChan := make(chan os.Signal)
+	// Invoke shutdown-related tasks on exit
+	defer b.Close()
+
+	// Process input from IRC servers
+	go func() {
+		for {
+			b.LoopOnce()
+		}
+	}()
+
+	// Catch interrupt signal and exit
+	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 	<-sigChan
 }
