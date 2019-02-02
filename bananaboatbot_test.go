@@ -90,18 +90,8 @@ func TestTrivial(t *testing.T) {
 				gotGoodbye = true
 			}
 		}
-		conn.Close()
-		conn, err = l.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoder = irc.NewEncoder(conn)
-		decoder = irc.NewDecoder(conn)
-		_, err = decoder.Decode()
-		if err != nil {
-			t.Fatal(err)
-		}
 		done = true
+		conn.Close()
 	}()
 
 	b = NewBananaBoatBot(&BananaBoatBotConfig{

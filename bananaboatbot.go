@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"log"
 	"math/big"
+	"reflect"
 	"sync"
 
 	"github.com/yuin/gopher-lua"
@@ -21,6 +22,7 @@ type BananaBoatBot struct {
 	luaState      *lua.LState
 	luaMutex      sync.Mutex
 	servers       map[string]*IrcServer
+	serversMutex  sync.RWMutex
 	serverErrors  chan IrcServerError
 }
 
@@ -117,6 +119,8 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
 // LoopOnce is called repeatedly to handle all basic processing
 func (b *BananaBoatBot) LoopOnce() {
 	// Iterate over servers...
+	b.serversMutex.RLock()
+	defer b.serversMutex.RUnlock()
 	for svrName, svr := range b.servers {
 		select {
 		// Try to read input
@@ -140,7 +144,7 @@ func (b *BananaBoatBot) LoopOnce() {
 	}
 }
 
-func (b *BananaBoatBot) loadLuaCommon() *lua.LTable {
+func (b *BananaBoatBot) loadLuaCommon() {
 
 	if err := b.luaState.DoFile(b.config.luaFile); err != nil {
 		log.Fatalf("Lua error: %s", err)
@@ -166,19 +170,134 @@ func (b *BananaBoatBot) loadLuaCommon() *lua.LTable {
 		b.username = username
 	}
 
-	// FIXME: remove deleted handlers on reload
 	lv = tbl.RawGetString("handlers")
 	defer b.handlersMutex.Unlock()
 	b.handlersMutex.Lock()
+	luaCommands := make(map[string]struct{}, 0)
 	if handlerTbl, ok := lv.(*lua.LTable); ok {
 		handlerTbl.ForEach(func(commandName lua.LValue, handlerFuncL lua.LValue) {
 			if handlerFunc, ok := handlerFuncL.(*lua.LFunction); ok {
-				b.handlers[lua.LVAsString(commandName)] = handlerFunc
+				commandNameStr := lua.LVAsString(commandName)
+				b.handlers[commandNameStr] = handlerFunc
+				luaCommands[commandNameStr] = struct{}{}
+			}
+		})
+	} else {
+		// FIXME: return error?
+	}
+	// Delete handlers still in map but no longer defined in Lua
+	for k := range b.handlers {
+		if _, ok := luaCommands[k]; !ok {
+			delete(b.handlers, k)
+		}
+	}
+
+	// Make map of server names collected from Lua
+	luaServerNames := make(map[string]struct{}, 0)
+	// Remember which servers we created
+	createdServerNames := make([]string, 0)
+	// Get 'servers' from table
+	lv = tbl.RawGetString("servers")
+	// Get table value
+	if serverTbl, ok := lv.(*lua.LTable); ok {
+		// Iterate over nested tables...
+		serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
+			// Get nested table
+			if serverSettings, ok := serverSettingsLV.(*lua.LTable); ok {
+				// Get 'server' string from table
+				lv = serverSettings.RawGetString("server")
+				host := lua.LVAsString(lv)
+				// Get 'tls' bool from table
+				var tls bool
+				lv = serverSettings.RawGetString("tls")
+				if lv, ok := lv.(lua.LBool); ok {
+					tls = bool(lv)
+				}
+				// Get 'port' from table
+				var portInt int
+				lv = serverSettings.RawGetString("port")
+				if port, ok := lv.(lua.LNumber); ok {
+					portInt = int(port)
+				} else {
+					portInt = b.config.defaultIrcPort
+				}
+				// Get 'nick' from table - use default if unavailable
+				var nick string
+				lv = serverSettings.RawGetString("nick")
+				if lv, ok := lv.(lua.LString); ok {
+					nick = lua.LVAsString(lv)
+				} else {
+					nick = b.nick
+				}
+				// Get 'realname' from table - use default if unavailable
+				var realname string
+				lv = serverSettings.RawGetString("realname")
+				if lv, ok := lv.(lua.LString); ok {
+					realname = lua.LVAsString(lv)
+				} else {
+					realname = b.realname
+				}
+				// Get 'username' from table - use default if unavailable
+				var username string
+				lv = serverSettings.RawGetString("username")
+				if lv, ok := lv.(lua.LString); ok {
+					username = lua.LVAsString(lv)
+				} else {
+					username = b.username
+				}
+
+				// Remember we found this key
+				serverNameStr := lua.LVAsString(serverName)
+				luaServerNames[serverNameStr] = struct{}{}
+				createServer := false
+				serverSettings := &IrcServerSettings{
+					Host:     host,
+					Port:     portInt,
+					TLS:      tls,
+					Nick:     nick,
+					Realname: realname,
+					Username: username,
+				}
+				// Check if server already exists and/or if we need to (re)create it
+				if oldSvr, ok := b.servers[serverNameStr]; ok {
+					if !reflect.DeepEqual(oldSvr.settings, serverSettings) {
+						createServer = true
+					}
+				} else {
+					createServer = true
+				}
+				if createServer {
+					// Create new IRC server
+					svr := NewIrcServer(serverNameStr, &IrcServerSettings{
+						Host:     host,
+						Port:     portInt,
+						TLS:      tls,
+						Nick:     nick,
+						Realname: realname,
+						Username: username,
+					})
+					// Set server to map
+					b.serversMutex.Lock()
+					b.servers[serverNameStr] = svr
+					b.serversMutex.Unlock()
+					// Remember to start it shortly
+					createdServerNames = append(createdServerNames, serverNameStr)
+				}
 			}
 		})
 	}
-	// FIXME: deal with servers, remove this function
-	return tbl
+	// Remove servers no longer defined in Lua
+	for k := range b.servers {
+		if _, ok := luaServerNames[k]; !ok {
+			b.serversMutex.Lock()
+			delete(b.servers, k)
+			b.serversMutex.Unlock()
+		}
+	}
+	// Start any servers which need to be started
+	for _, name := range createdServerNames {
+		go b.servers[name].Dial(b.serverErrors)
+	}
 }
 
 // ReloadLua deals with reloading Lua parts
@@ -245,75 +364,11 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 	// Provide access to our library functions in Lua
 	b.luaState.PreloadModule("bananaboat", b.luaLibLoader)
 
-	// Call Lua script and get a table result
-	tbl := b.loadLuaCommon()
-
-	// Get 'servers' from table
-	lv := tbl.RawGetString("servers")
-	// Get table value
-	if serverTbl, ok := lv.(*lua.LTable); ok {
-		// Iterate over nested tables...
-		serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
-			// Get nested table
-			if serverSettings, ok := serverSettingsLV.(*lua.LTable); ok {
-				// Get 'server' string from table
-				lv = serverSettings.RawGetString("server")
-				host := lua.LVAsString(lv)
-				// Get 'tls' bool from table
-				var tls bool
-				lv = serverSettings.RawGetString("tls")
-				if lv, ok := lv.(lua.LBool); ok {
-					tls = bool(lv)
-				}
-				// Get 'port' from table
-				var portInt int
-				lv = serverSettings.RawGetString("port")
-				if port, ok := lv.(lua.LNumber); ok {
-					portInt = int(port)
-				} else {
-					portInt = b.config.defaultIrcPort
-				}
-				// Get 'nick' from table - use default if unavailable
-				var nick string
-				lv = serverSettings.RawGetString("nick")
-				if lv, ok := lv.(lua.LString); ok {
-					nick = lua.LVAsString(lv)
-				} else {
-					nick = b.nick
-				}
-				// Get 'realname' from table - use default if unavailable
-				var realname string
-				lv = serverSettings.RawGetString("realname")
-				if lv, ok := lv.(lua.LString); ok {
-					realname = lua.LVAsString(lv)
-				} else {
-					realname = b.realname
-				}
-				// Get 'username' from table - use default if unavailable
-				var username string
-				lv = serverSettings.RawGetString("username")
-				if lv, ok := lv.(lua.LString); ok {
-					username = lua.LVAsString(lv)
-				} else {
-					username = b.username
-				}
-				// Create new IRC server
-				serverNameStr := lua.LVAsString(serverName)
-				svr := NewIrcServer(serverNameStr, &IrcServerSettings{
-					Host:     host,
-					Port:     portInt,
-					TLS:      tls,
-					Nick:     nick,
-					Realname: realname,
-					Username: username,
-				})
-				// Set server to map
-				b.servers[serverNameStr] = svr
-			}
-		})
-	}
+	// Call Lua script and process result
+	b.loadLuaCommon()
 	// Clear Lua stack
 	b.luaState.SetTop(0)
+
 	// Try to connect all servers
 	for _, server := range b.servers {
 		go server.Dial(b.serverErrors)
