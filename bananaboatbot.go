@@ -13,12 +13,12 @@ import (
 
 // BananaBoatBot contains config & state of the bot
 type BananaBoatBot struct {
+	config        *BananaBoatBotConfig
 	handlers      map[string]*lua.LFunction
 	handlersMutex sync.RWMutex
 	nick          string
 	realname      string
 	username      string
-	luaFile       string
 	luaState      *lua.LState
 	luaMutex      sync.Mutex
 	servers       map[string]*IrcServer
@@ -52,7 +52,7 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
 			luaParams[2] = lua.LString(msg.Prefix.User)
 			luaParams[3] = lua.LString(msg.Prefix.Host)
 		}
-		// Fifth parameter onwards is unpacked parameters of the irc.Message
+		// Fourth parameter onwards is unpacked parameters of the irc.Message
 		pi := 0
 		for i := 4; i < len(luaParams); i++ {
 			luaParams[i] = lua.LString(msg.Params[pi])
@@ -145,7 +145,7 @@ func (b *BananaBoatBot) LoopOnce() {
 
 func (b *BananaBoatBot) loadLuaCommon() *lua.LTable {
 
-	if err := b.luaState.DoFile(b.luaFile); err != nil {
+	if err := b.luaState.DoFile(b.config.luaFile); err != nil {
 		log.Fatalf("Lua error: %s", err)
 	}
 
@@ -220,18 +220,23 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	return 1
 }
 
+type BananaBoatBotConfig struct {
+	luaFile        string
+	defaultIrcPort int
+}
+
 // NewBananaBoatBot creates a new BananaBoatBot
-func NewBananaBoatBot(luaFile string) *BananaBoatBot {
+func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 
 	// We require a path to some script to load
-	if len(luaFile) == 0 {
+	if len(config.luaFile) == 0 {
 		log.Fatal("Please specify script using -lua flag")
 	}
 
 	// Create BananaBoatBot
 	b := BananaBoatBot{
+		config:       config,
 		handlers:     make(map[string]*lua.LFunction),
-		luaFile:      luaFile,
 		luaState:     lua.NewState(),
 		nick:         "BananaBoatBot",
 		realname:     "Banana Boat Bot",
@@ -268,6 +273,8 @@ func NewBananaBoatBot(luaFile string) *BananaBoatBot {
 				lv = serverSettings.RawGetString("port")
 				if port, ok := lv.(lua.LNumber); ok {
 					portInt = int(port)
+				} else {
+					portInt = b.config.defaultIrcPort
 				}
 				// Get 'nick' from table - use default if unavailable
 				var nick string

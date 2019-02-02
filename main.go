@@ -10,6 +10,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+const (
+	defaultIrcPort = 6667
+)
+
 func main() {
 	// Set up and parse commandline flags
 	luaFile := flag.String("lua", "", "Path to Lua script")
@@ -24,7 +28,10 @@ func main() {
 	log.SetOutput(logger)
 
 	// Create BananaBoatBot
-	b := NewBananaBoatBot(*luaFile)
+	b := NewBananaBoatBot(&BananaBoatBotConfig{
+		defaultIrcPort: defaultIrcPort,
+		luaFile:        *luaFile,
+	})
 
 	// Setup handlers for webserver
 	http.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {

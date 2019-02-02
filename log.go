@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"container/ring"
+	"io"
+	"io/ioutil"
 	"os"
 )
 
@@ -10,24 +12,26 @@ import (
 type Logger struct {
 	config *LoggerConfig
 	ring   *ring.Ring
+	writer io.Writer
 }
 
 // LoggerConfig contains configuration for the logger
 type LoggerConfig struct {
 	ringSize int
+	quiet    bool
 }
 
-// Handle writes
+// Write handles writes
 func (l *Logger) Write(b []byte) (wrote int, err error) {
 	// Convert message to string, set it to ring buffer
 	l.ring.Value = string(b)
 	// Move ringbuffer to next value
 	l.ring = l.ring.Next()
 	// Write message to stdout
-	return os.Stdout.Write(b)
+	return l.writer.Write(b)
 }
 
-// Returns ringbuffer as []byte
+// ShowRing returns ringbuffer as []byte
 func (l *Logger) ShowRing() (log []byte) {
 	// Create bytes.Buffer
 	var b bytes.Buffer
@@ -40,12 +44,17 @@ func (l *Logger) ShowRing() (log []byte) {
 	return b.Bytes()
 }
 
-// Creates a new Logger
+// NewLogger creates a new Logger
 func NewLogger(config *LoggerConfig) *Logger {
 	// Create logger
 	l := &Logger{
 		config: config,
 		ring:   ring.New(config.ringSize),
+	}
+	if config.quiet {
+		l.writer = ioutil.Discard
+	} else {
+		l.writer = os.Stdout
 	}
 	// Populate ringbuffer with empty strings
 	for i := 0; i < config.ringSize; i++ {
