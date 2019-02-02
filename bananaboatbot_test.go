@@ -31,70 +31,77 @@ func TestTrivial(t *testing.T) {
 	var b *BananaBoatBot
 
 	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoder := irc.NewEncoder(conn)
+		decoder := irc.NewDecoder(conn)
 		for {
-			conn, err := l.Accept()
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoder := irc.NewEncoder(conn)
-			decoder := irc.NewDecoder(conn)
-			for {
-				msg, err := decoder.Decode()
-				if err != nil {
-					t.Fatal(err)
-				}
-				// XXX: capabilities
-				if msg.Command == irc.USER {
-					break
-				}
-			}
-			encoder.Encode(&irc.Message{
-				Command: irc.RPL_WELCOME,
-			})
-			fakePrefix := &irc.Prefix{
-				Name: "bob",
-				User: "ubob",
-				Host: "hbob",
-			}
-			encoder.Encode(&irc.Message{
-				Command: irc.PRIVMSG,
-				Params:  []string{"testbot1", "HELLO"},
-				Prefix:  fakePrefix,
-			})
-			encoder.Encode(&irc.Message{
-				Command: irc.PRIVMSG,
-				Params:  []string{"testbot1", "asdf"},
-				Prefix:  fakePrefix,
-			})
 			msg, err := decoder.Decode()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if msg.Command == irc.PRIVMSG {
-				if msg.Params[1] == "HELLO" {
-					gotHello = true
-				}
+			// XXX: capabilities
+			if msg.Command == irc.USER {
+				break
 			}
-			b.config.luaFile = "test/trivial2.lua"
-			b.ReloadLua()
-			encoder.Encode(&irc.Message{
-				Command: irc.PRIVMSG,
-				Params:  []string{"testbot1", "HELLO"},
-				Prefix:  fakePrefix,
-			})
-			msg, err = decoder.Decode()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if msg.Command == irc.PRIVMSG {
-				if msg.Params[1] == "GOODBYE" {
-					gotGoodbye = true
-				}
-			}
-			conn.Close()
-			done = true
-			break
 		}
+		encoder.Encode(&irc.Message{
+			Command: irc.RPL_WELCOME,
+		})
+		fakePrefix := &irc.Prefix{
+			Name: "bob",
+			User: "ubob",
+			Host: "hbob",
+		}
+		encoder.Encode(&irc.Message{
+			Command: irc.PRIVMSG,
+			Params:  []string{"testbot1", "HELLO"},
+			Prefix:  fakePrefix,
+		})
+		encoder.Encode(&irc.Message{
+			Command: irc.PRIVMSG,
+			Params:  []string{"testbot1", "asdf"},
+			Prefix:  fakePrefix,
+		})
+		msg, err := decoder.Decode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg.Command == irc.PRIVMSG {
+			if msg.Params[1] == "HELLO" {
+				gotHello = true
+			}
+		}
+		b.config.luaFile = "test/trivial2.lua"
+		b.ReloadLua()
+		encoder.Encode(&irc.Message{
+			Command: irc.PRIVMSG,
+			Params:  []string{"testbot1", "HELLO"},
+			Prefix:  fakePrefix,
+		})
+		msg, err = decoder.Decode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg.Command == irc.PRIVMSG {
+			if msg.Params[1] == "GOODBYE" {
+				gotGoodbye = true
+			}
+		}
+		conn.Close()
+		conn, err = l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoder = irc.NewEncoder(conn)
+		decoder = irc.NewDecoder(conn)
+		_, err = decoder.Decode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		done = true
 	}()
 
 	b = NewBananaBoatBot(&BananaBoatBotConfig{
@@ -102,7 +109,7 @@ func TestTrivial(t *testing.T) {
 		luaFile:        "test/trivial1.lua",
 	})
 
-	for done == false {
+	for !done {
 		b.LoopOnce()
 	}
 

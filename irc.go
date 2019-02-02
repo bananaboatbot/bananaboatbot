@@ -3,7 +3,8 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
-	"io"
+	"log"
+	"math"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -12,14 +13,15 @@ import (
 
 // IrcServer contains everything related to a given IRC server
 type IrcServer struct {
-	Input       chan (irc.Message)
-	LimitOutput *rate.Limiter
-	Output      chan (irc.Message)
-	addr        string
-	conn        *irc.Conn
-	name        string
-	settings    *IrcServerSettings
-	tlsConfig   *tls.Config
+	Input        chan (irc.Message)
+	LimitOutput  *rate.Limiter
+	Output       chan (irc.Message)
+	addr         string
+	conn         *irc.Conn
+	name         string
+	reconnectExp float64
+	settings     *IrcServerSettings
+	tlsConfig    *tls.Config
 }
 
 // IrcServerError is used to supplement errors with the friendly server name
@@ -30,6 +32,12 @@ type IrcServerError struct {
 
 // Dial tries to connect to the server and start processing
 func (s *IrcServer) Dial(errChan chan IrcServerError) {
+
+	if s.reconnectExp != 0 {
+		p := 3600 * math.Tanh(s.reconnectExp)
+		log.Printf("Sleeping for %.2f seconds before reconnecting to %s", p, s.name)
+		time.Sleep(time.Duration(p) * time.Second)
+	}
 	var err error
 	// Use irc.Dial or .DialTLS according to configuration
 	if s.settings.TLS {
@@ -39,9 +47,15 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 	}
 	// Handle Dial error
 	if err != nil {
+		if s.reconnectExp == 0 {
+			s.reconnectExp = 0.001
+		} else {
+			s.reconnectExp = s.reconnectExp * 2
+		}
 		errChan <- IrcServerError{Name: s.name, Error: err}
 		return
 	}
+	s.reconnectExp = 0
 	// Process input
 	go func() {
 		// Forever ...
@@ -50,9 +64,7 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 			msg, err := s.conn.Decoder.Decode()
 			// Handle error
 			if err != nil {
-				if err != io.EOF {
-					errChan <- IrcServerError{Name: s.name, Error: err}
-				}
+				errChan <- IrcServerError{Name: s.name, Error: err}
 				return
 			}
 			// Send message to input channel

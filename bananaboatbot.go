@@ -5,7 +5,6 @@ import (
 	"log"
 	"math/big"
 	"sync"
-	"time"
 
 	"github.com/yuin/gopher-lua"
 	irc "gopkg.in/sorcix/irc.v2"
@@ -135,8 +134,6 @@ func (b *BananaBoatBot) LoopOnce() {
 	case serverErr := <-b.serverErrors:
 		// Log the error
 		log.Print(serverErr.Error)
-		// Wait - XXX FIXME
-		time.Sleep(time.Second * 5)
 		// Try reconnect to the server
 		go b.servers[serverErr.Name].Dial(b.serverErrors)
 	default:
