@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	irc "gopkg.in/sorcix/irc.v2"
@@ -13,7 +14,8 @@ import (
 
 func TestTrivial(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
-	done := false
+	var done atomic.Value
+	done.Store(false)
 	gotHello := false
 	gotGoodbye := false
 
@@ -90,7 +92,7 @@ func TestTrivial(t *testing.T) {
 				gotGoodbye = true
 			}
 		}
-		done = true
+		done.Store(true)
 		conn.Close()
 	}()
 
@@ -99,7 +101,7 @@ func TestTrivial(t *testing.T) {
 		luaFile:        "test/trivial1.lua",
 	})
 
-	for !done {
+	for !done.Load().(bool) {
 		b.LoopOnce()
 	}
 

@@ -369,10 +369,6 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 	// Clear Lua stack
 	b.luaState.SetTop(0)
 
-	// Try to connect all servers
-	for _, server := range b.servers {
-		go server.Dial(b.serverErrors)
-	}
 	// Return BananaBoatBot
 	return &b
 }
