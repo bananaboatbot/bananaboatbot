@@ -59,13 +59,6 @@ func main() {
 	// Invoke shutdown-related tasks on exit
 	defer b.Close()
 
-	// Process input from IRC servers
-	b.serversMutex.RLock()
-	for _, svr := range b.servers {
-		go b.Loop(svr)
-	}
-	b.serversMutex.RUnlock()
-
 	// Catch interrupt signal and exit
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)

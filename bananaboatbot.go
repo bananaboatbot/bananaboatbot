@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"log"
 	"math/big"
-	"reflect"
 	"sync"
 
 	"github.com/yuin/gopher-lua"
@@ -33,7 +32,9 @@ func (b *BananaBoatBot) Close() {
 }
 
 // handleHandlers invokes any registered Lua handlers for a command
-func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
+func (b *BananaBoatBot) handleHandlers(svrName string, msg *irc.Message) {
+	// Log message
+	log.Print(msg)
 	// Get read mutex for handlers map
 	b.handlersMutex.RLock()
 	// If we have a function corresponding to this command...
@@ -53,7 +54,7 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
 			luaParams[2] = lua.LString(msg.Prefix.User)
 			luaParams[3] = lua.LString(msg.Prefix.Host)
 		}
-		// Fourth parameter onwards is unpacked parameters of the irc.Message
+		// Fifth parameter onwards is unpacked parameters of the irc.Message
 		pi := 0
 		for i := 4; i < len(luaParams); i++ {
 			luaParams[i] = lua.LString(msg.Params[pi])
@@ -116,8 +117,8 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
 	}
 }
 
-// Loop handles all events for a server
-func (b *BananaBoatBot) Loop(svr *IrcServer) {
+// ReconnectServers reconnects servers on error
+func (b *BananaBoatBot) ReconnectServers() {
 	for {
 		select {
 		// Process any errors we might have received
@@ -125,14 +126,7 @@ func (b *BananaBoatBot) Loop(svr *IrcServer) {
 			// Log the error
 			log.Print(serverErr.Error)
 			// Try reconnect to the server
-			go b.servers[serverErr.Name].Dial(b.serverErrors)
-		// Try to read input
-		case msg := <-svr.Input:
-			// Log message
-			log.Print(msg)
-			// Call handler if necessary
-			b.handleHandlers(svr.name, msg)
-			break
+			go b.servers[serverErr.Name].Dial()
 		}
 	}
 }
@@ -244,16 +238,23 @@ func (b *BananaBoatBot) loadLuaCommon() {
 				luaServerNames[serverNameStr] = struct{}{}
 				createServer := false
 				serverSettings := &IrcServerSettings{
-					Host:     host,
-					Port:     portInt,
-					TLS:      tls,
-					Nick:     nick,
-					Realname: realname,
-					Username: username,
+					Host:          host,
+					Port:          portInt,
+					TLS:           tls,
+					Nick:          nick,
+					Realname:      realname,
+					Username:      username,
+					errChan:       b.serverErrors,
+					inputCallback: b.handleHandlers,
 				}
 				// Check if server already exists and/or if we need to (re)create it
 				if oldSvr, ok := b.servers[serverNameStr]; ok {
-					if !reflect.DeepEqual(oldSvr.settings, serverSettings) {
+					if !(oldSvr.settings.Host == serverSettings.Host &&
+						oldSvr.settings.Port == serverSettings.Port &&
+						oldSvr.settings.TLS == serverSettings.TLS &&
+						oldSvr.settings.Nick == serverSettings.Nick &&
+						oldSvr.settings.Realname == serverSettings.Realname &&
+						oldSvr.settings.Username == serverSettings.Username) {
 						createServer = true
 					}
 				} else {
@@ -262,12 +263,14 @@ func (b *BananaBoatBot) loadLuaCommon() {
 				if createServer {
 					// Create new IRC server
 					svr := NewIrcServer(serverNameStr, &IrcServerSettings{
-						Host:     host,
-						Port:     portInt,
-						TLS:      tls,
-						Nick:     nick,
-						Realname: realname,
-						Username: username,
+						Host:          host,
+						Port:          portInt,
+						TLS:           tls,
+						Nick:          nick,
+						Realname:      realname,
+						Username:      username,
+						errChan:       b.serverErrors,
+						inputCallback: b.handleHandlers,
 					})
 					// Set server to map
 					b.serversMutex.Lock()
@@ -283,13 +286,14 @@ func (b *BananaBoatBot) loadLuaCommon() {
 	for k := range b.servers {
 		if _, ok := luaServerNames[k]; !ok {
 			b.serversMutex.Lock()
+			b.servers[k].conn.Close()
 			delete(b.servers, k)
 			b.serversMutex.Unlock()
 		}
 	}
 	// Start any servers which need to be started
 	for _, name := range createdServerNames {
-		go b.servers[name].Dial(b.serverErrors)
+		go b.servers[name].Dial()
 	}
 }
 
@@ -354,6 +358,8 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 		username:     "bananarama",
 	}
 
+	b.luaMutex.Lock()
+
 	// Provide access to our library functions in Lua
 	b.luaState.PreloadModule("bananaboat", b.luaLibLoader)
 
@@ -361,6 +367,8 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 	b.loadLuaCommon()
 	// Clear Lua stack
 	b.luaState.SetTop(0)
+
+	b.luaMutex.Unlock()
 
 	// Return BananaBoatBot
 	return &b

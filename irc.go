@@ -13,11 +13,10 @@ import (
 
 // IrcServer contains everything related to a given IRC server
 type IrcServer struct {
-	Input        chan (irc.Message)
-	LimitOutput  *rate.Limiter
 	Output       chan (irc.Message)
 	addr         string
 	conn         *irc.Conn
+	limitOutput  *rate.Limiter
 	name         string
 	reconnectExp float64
 	settings     *IrcServerSettings
@@ -31,7 +30,7 @@ type IrcServerError struct {
 }
 
 // Dial tries to connect to the server and start processing
-func (s *IrcServer) Dial(errChan chan IrcServerError) {
+func (s *IrcServer) Dial() {
 
 	if s.reconnectExp != 0 {
 		p := 3600 * math.Tanh(s.reconnectExp)
@@ -52,11 +51,11 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 		} else {
 			s.reconnectExp = s.reconnectExp * 2
 		}
-		errChan <- IrcServerError{Name: s.name, Error: err}
+		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 		return
 	}
 	s.reconnectExp = 0
-	// Process input
+	// Read input from server and invoke callback
 	go func() {
 		// Forever ...
 		for {
@@ -64,14 +63,14 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 			msg, err := s.conn.Decoder.Decode()
 			// Handle error
 			if err != nil {
-				errChan <- IrcServerError{Name: s.name, Error: err}
+				s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 				return
 			}
-			// Send message to input channel
-			s.Input <- *msg
+			// Invoke callback
+			go s.settings.inputCallback(s.name, msg)
 		}
 	}()
-	// Process output
+	// Read messages from Output channel and send them to the server
 	go func() {
 		// Forever ...
 		for {
@@ -82,14 +81,14 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 				return
 			}
 			// If ratelimit doesn't allow sending, wait
-			for !s.LimitOutput.Allow() {
+			for !s.limitOutput.Allow() {
 				time.Sleep(time.Millisecond * 500)
 			}
 			// Send message to socket
 			err := s.conn.Encoder.Encode(&msg)
 			// Handle error
 			if err != nil {
-				errChan <- IrcServerError{Name: s.name, Error: err}
+				s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 				return
 			}
 		}
@@ -102,7 +101,7 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 		})
 		// Handle error
 		if err != nil {
-			errChan <- IrcServerError{Name: s.name, Error: err}
+			s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 			return
 		}
 	}
@@ -113,7 +112,7 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 	})
 	// Handle error
 	if err != nil {
-		errChan <- IrcServerError{Name: s.name, Error: err}
+		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 		return
 	}
 	// Send USER
@@ -123,29 +122,30 @@ func (s *IrcServer) Dial(errChan chan IrcServerError) {
 	})
 	// Handle error
 	if err != nil {
-		errChan <- IrcServerError{Name: s.name, Error: err}
+		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
 	}
 	return
 }
 
 // IrcServerSettings contains all configuration for an IRC server
 type IrcServerSettings struct {
-	Host     string
-	Nick     string
-	Password string
-	Port     int
-	Realname string
-	TLS      bool
-	Username string
+	Host          string
+	Nick          string
+	Password      string
+	Port          int
+	Realname      string
+	TLS           bool
+	Username      string
+	errChan       chan IrcServerError
+	inputCallback func(svrName string, msg *irc.Message)
 }
 
 // NewIrcServer creates an IRC server
 func NewIrcServer(name string, settings *IrcServerSettings) *IrcServer {
 	// Return new IrcServer
 	return &IrcServer{
-		Input:       make(chan irc.Message, 1),
 		Output:      make(chan irc.Message, 1),
-		LimitOutput: rate.NewLimiter(1, 10),
+		limitOutput: rate.NewLimiter(1, 10),
 		addr:        fmt.Sprintf("%s:%d", settings.Host, settings.Port),
 		name:        name,
 		settings:    settings,

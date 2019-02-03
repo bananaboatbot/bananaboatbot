@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	irc "gopkg.in/sorcix/irc.v2"
 )
@@ -31,8 +32,10 @@ func TestTrivial(t *testing.T) {
 	}
 
 	var b *BananaBoatBot
+	ready := make(chan struct{}, 0)
 
 	go func() {
+		<-ready
 		conn, err := l.Accept()
 		if err != nil {
 			t.Fatal(err)
@@ -100,9 +103,10 @@ func TestTrivial(t *testing.T) {
 		defaultIrcPort: serverPort,
 		luaFile:        "test/trivial1.lua",
 	})
+	ready <- struct{}{}
 
 	for !done.Load().(bool) {
-		b.LoopOnce()
+		time.Sleep(time.Millisecond)
 	}
 
 	if !gotHello {
