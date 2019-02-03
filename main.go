@@ -60,11 +60,11 @@ func main() {
 	defer b.Close()
 
 	// Process input from IRC servers
-	go func() {
-		for {
-			b.LoopOnce()
-		}
-	}()
+	b.serversMutex.RLock()
+	for _, svr := range b.servers {
+		go b.Loop(svr)
+	}
+	b.serversMutex.RUnlock()
 
 	// Catch interrupt signal and exit
 	sigChan := make(chan os.Signal, 1)

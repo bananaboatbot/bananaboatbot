@@ -116,31 +116,24 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg irc.Message) {
 	}
 }
 
-// LoopOnce is called repeatedly to handle all basic processing
-func (b *BananaBoatBot) LoopOnce() {
-	// Iterate over servers...
-	b.serversMutex.RLock()
-	defer b.serversMutex.RUnlock()
-	for svrName, svr := range b.servers {
+// Loop handles all events for a server
+func (b *BananaBoatBot) Loop(svr *IrcServer) {
+	for {
 		select {
+		// Process any errors we might have received
+		case serverErr := <-b.serverErrors:
+			// Log the error
+			log.Print(serverErr.Error)
+			// Try reconnect to the server
+			go b.servers[serverErr.Name].Dial(b.serverErrors)
 		// Try to read input
 		case msg := <-svr.Input:
 			// Log message
 			log.Print(msg)
 			// Call handler if necessary
-			b.handleHandlers(svrName, msg)
-		default:
-			continue
+			b.handleHandlers(svr.name, msg)
+			break
 		}
-	}
-	// Process any errors we might have received
-	select {
-	case serverErr := <-b.serverErrors:
-		// Log the error
-		log.Print(serverErr.Error)
-		// Try reconnect to the server
-		go b.servers[serverErr.Name].Dial(b.serverErrors)
-	default:
 	}
 }
 
