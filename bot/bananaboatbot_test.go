@@ -1,4 +1,4 @@
-package main
+package bot_test
 
 import (
 	"io/ioutil"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fatalbanana/bananaboatbot/bot"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
@@ -31,7 +32,7 @@ func TestTrivial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var b *BananaBoatBot
+	var b *bot.BananaBoatBot
 	ready := make(chan struct{}, 0)
 
 	go func() {
@@ -79,7 +80,7 @@ func TestTrivial(t *testing.T) {
 				gotHello = true
 			}
 		}
-		b.config.luaFile = "test/trivial2.lua"
+		b.Config.LuaFile = "../test/trivial2.lua"
 		b.ReloadLua()
 		encoder.Encode(&irc.Message{
 			Command: irc.PRIVMSG,
@@ -99,9 +100,9 @@ func TestTrivial(t *testing.T) {
 		conn.Close()
 	}()
 
-	b = NewBananaBoatBot(&BananaBoatBotConfig{
-		defaultIrcPort: serverPort,
-		luaFile:        "test/trivial1.lua",
+	b = bot.NewBananaBoatBot(&bot.BananaBoatBotConfig{
+		DefaultIrcPort: serverPort,
+		LuaFile:        "../test/trivial1.lua",
 	})
 	ready <- struct{}{}
 

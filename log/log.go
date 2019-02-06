@@ -1,4 +1,4 @@
-package main
+package log
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ type Logger struct {
 
 // LoggerConfig contains configuration for the logger
 type LoggerConfig struct {
-	ringSize int
-	quiet    bool
+	RingSize int
+	Quiet    bool
 }
 
 // Write handles writes
@@ -49,15 +49,15 @@ func NewLogger(config *LoggerConfig) *Logger {
 	// Create logger
 	l := &Logger{
 		config: config,
-		ring:   ring.New(config.ringSize),
+		ring:   ring.New(config.RingSize),
 	}
-	if config.quiet {
+	if config.Quiet {
 		l.writer = ioutil.Discard
 	} else {
 		l.writer = os.Stdout
 	}
 	// Populate ringbuffer with empty strings
-	for i := 0; i < config.ringSize; i++ {
+	for i := 0; i < config.RingSize; i++ {
 		l.ring.Value = ""
 		l.ring = l.ring.Next()
 	}

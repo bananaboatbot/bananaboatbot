@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/fatalbanana/bananaboatbot/bot"
+	blog "github.com/fatalbanana/bananaboatbot/log"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -22,15 +24,15 @@ func main() {
 	flag.Parse()
 
 	// Set up custom logger for maintaining log in ringbuffer
-	logger := NewLogger(&LoggerConfig{
-		ringSize: *ringSize,
+	logger := blog.NewLogger(&blog.LoggerConfig{
+		RingSize: *ringSize,
 	})
 	log.SetOutput(logger)
 
 	// Create BananaBoatBot
-	b := NewBananaBoatBot(&BananaBoatBotConfig{
-		defaultIrcPort: defaultIrcPort,
-		luaFile:        *luaFile,
+	b := bot.NewBananaBoatBot(&bot.BananaBoatBotConfig{
+		DefaultIrcPort: defaultIrcPort,
+		LuaFile:        *luaFile,
 	})
 
 	// Setup handlers for webserver

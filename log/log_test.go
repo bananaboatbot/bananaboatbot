@@ -1,15 +1,17 @@
-package main
+package log_test
 
 import (
 	"bytes"
 	"log"
 	"testing"
+
+	blog "github.com/fatalbanana/bananaboatbot/log"
 )
 
 func TestLogger(t *testing.T) {
-	logger := NewLogger(&LoggerConfig{
-		ringSize: 2,
-		quiet:    true,
+	logger := blog.NewLogger(&blog.LoggerConfig{
+		RingSize: 2,
+		Quiet:    true,
 	})
 	log.SetOutput(logger)
 	log.SetFlags(0)

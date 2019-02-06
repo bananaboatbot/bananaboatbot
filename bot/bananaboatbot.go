@@ -1,4 +1,4 @@
-package main
+package bot
 
 import (
 	"crypto/rand"
@@ -12,7 +12,7 @@ import (
 
 // BananaBoatBot contains config & state of the bot
 type BananaBoatBot struct {
-	config        *BananaBoatBotConfig
+	Config        *BananaBoatBotConfig
 	handlers      map[string]*lua.LFunction
 	handlersMutex sync.RWMutex
 	nick          string
@@ -28,7 +28,14 @@ type BananaBoatBot struct {
 // Close handles shutdown-related tasks
 func (b *BananaBoatBot) Close() {
 	log.Print("Shutting down")
+	b.serversMutex.Lock()
+	for _, svr := range b.servers {
+		svr.Close()
+	}
+	b.serversMutex.Unlock()
+	b.luaMutex.Lock()
 	b.luaState.Close()
+	b.luaMutex.Unlock()
 }
 
 // handleHandlers invokes any registered Lua handlers for a command
@@ -133,7 +140,7 @@ func (b *BananaBoatBot) ReconnectServers() {
 
 func (b *BananaBoatBot) loadLuaCommon() {
 
-	if err := b.luaState.DoFile(b.config.luaFile); err != nil {
+	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
 		log.Fatalf("Lua error: %s", err)
 	}
 
@@ -206,7 +213,7 @@ func (b *BananaBoatBot) loadLuaCommon() {
 				if port, ok := lv.(lua.LNumber); ok {
 					portInt = int(port)
 				} else {
-					portInt = b.config.defaultIrcPort
+					portInt = b.Config.DefaultIrcPort
 				}
 				// Get 'nick' from table - use default if unavailable
 				var nick string
@@ -244,17 +251,17 @@ func (b *BananaBoatBot) loadLuaCommon() {
 					Nick:          nick,
 					Realname:      realname,
 					Username:      username,
-					errChan:       b.serverErrors,
-					inputCallback: b.handleHandlers,
+					ErrorChannel:  b.serverErrors,
+					InputCallback: b.handleHandlers,
 				}
 				// Check if server already exists and/or if we need to (re)create it
 				if oldSvr, ok := b.servers[serverNameStr]; ok {
-					if !(oldSvr.settings.Host == serverSettings.Host &&
-						oldSvr.settings.Port == serverSettings.Port &&
-						oldSvr.settings.TLS == serverSettings.TLS &&
-						oldSvr.settings.Nick == serverSettings.Nick &&
-						oldSvr.settings.Realname == serverSettings.Realname &&
-						oldSvr.settings.Username == serverSettings.Username) {
+					if !(oldSvr.Settings.Host == serverSettings.Host &&
+						oldSvr.Settings.Port == serverSettings.Port &&
+						oldSvr.Settings.TLS == serverSettings.TLS &&
+						oldSvr.Settings.Nick == serverSettings.Nick &&
+						oldSvr.Settings.Realname == serverSettings.Realname &&
+						oldSvr.Settings.Username == serverSettings.Username) {
 						createServer = true
 					}
 				} else {
@@ -269,8 +276,8 @@ func (b *BananaBoatBot) loadLuaCommon() {
 						Nick:          nick,
 						Realname:      realname,
 						Username:      username,
-						errChan:       b.serverErrors,
-						inputCallback: b.handleHandlers,
+						ErrorChannel:  b.serverErrors,
+						InputCallback: b.handleHandlers,
 					})
 					// Set server to map
 					b.serversMutex.Lock()
@@ -283,25 +290,26 @@ func (b *BananaBoatBot) loadLuaCommon() {
 		})
 	}
 	// Remove servers no longer defined in Lua
+	b.serversMutex.Lock()
 	for k := range b.servers {
 		if _, ok := luaServerNames[k]; !ok {
-			b.serversMutex.Lock()
-			b.servers[k].conn.Close()
+			b.servers[k].Close()
 			delete(b.servers, k)
-			b.serversMutex.Unlock()
 		}
 	}
+	b.serversMutex.Unlock()
 	// Start any servers which need to be started
 	for _, name := range createdServerNames {
 		go b.servers[name].Dial()
 	}
+	// Restart any servers that need restarting
+	go b.ReconnectServers()
 }
 
 // ReloadLua deals with reloading Lua parts
 func (b *BananaBoatBot) ReloadLua() {
 	b.luaMutex.Lock()
 	b.loadLuaCommon()
-	// FIXME: handle reconfiguring servers
 	b.luaState.SetTop(0)
 	b.luaMutex.Unlock()
 }
@@ -334,27 +342,27 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 }
 
 type BananaBoatBotConfig struct {
-	luaFile        string
-	defaultIrcPort int
+	LuaFile        string
+	DefaultIrcPort int
 }
 
 // NewBananaBoatBot creates a new BananaBoatBot
 func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 
 	// We require a path to some script to load
-	if len(config.luaFile) == 0 {
+	if len(config.LuaFile) == 0 {
 		log.Fatal("Please specify script using -lua flag")
 	}
 
 	// Create BananaBoatBot
 	b := BananaBoatBot{
-		config:       config,
+		Config:       config,
 		handlers:     make(map[string]*lua.LFunction),
 		luaState:     lua.NewState(),
 		nick:         "BananaBoatBot",
 		realname:     "Banana Boat Bot",
 		servers:      make(map[string]*IrcServer),
-		serverErrors: make(chan IrcServerError),
+		serverErrors: make(chan IrcServerError, 1),
 		username:     "bananarama",
 	}
 

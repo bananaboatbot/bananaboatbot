@@ -1,4 +1,4 @@
-package main
+package bot
 
 import (
 	"crypto/tls"
@@ -19,7 +19,7 @@ type IrcServer struct {
 	limitOutput  *rate.Limiter
 	name         string
 	reconnectExp float64
-	settings     *IrcServerSettings
+	Settings     *IrcServerSettings
 	tlsConfig    *tls.Config
 }
 
@@ -27,6 +27,12 @@ type IrcServer struct {
 type IrcServerError struct {
 	Name  string
 	Error error
+}
+
+// Close closes the connection to the server
+func (s *IrcServer) Close() {
+	// XXX: QUIT
+	s.conn.Close()
 }
 
 // Dial tries to connect to the server and start processing
@@ -39,7 +45,7 @@ func (s *IrcServer) Dial() {
 	}
 	var err error
 	// Use irc.Dial or .DialTLS according to configuration
-	if s.settings.TLS {
+	if s.Settings.TLS {
 		s.conn, err = irc.DialTLS(s.addr, s.tlsConfig)
 	} else {
 		s.conn, err = irc.Dial(s.addr)
@@ -51,7 +57,7 @@ func (s *IrcServer) Dial() {
 		} else {
 			s.reconnectExp = s.reconnectExp * 2
 		}
-		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+		s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 		return
 	}
 	s.reconnectExp = 0
@@ -63,11 +69,11 @@ func (s *IrcServer) Dial() {
 			msg, err := s.conn.Decoder.Decode()
 			// Handle error
 			if err != nil {
-				s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+				s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 				return
 			}
 			// Invoke callback
-			go s.settings.inputCallback(s.name, msg)
+			go s.Settings.InputCallback(s.name, msg)
 		}
 	}()
 	// Read messages from Output channel and send them to the server
@@ -88,41 +94,41 @@ func (s *IrcServer) Dial() {
 			err := s.conn.Encoder.Encode(&msg)
 			// Handle error
 			if err != nil {
-				s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+				s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 				return
 			}
 		}
 	}()
 	// Send password if configured
-	if len(s.settings.Password) > 0 {
+	if len(s.Settings.Password) > 0 {
 		err = s.conn.Encoder.Encode(&irc.Message{
 			Command: irc.PASS,
-			Params:  []string{s.settings.Password},
+			Params:  []string{s.Settings.Password},
 		})
 		// Handle error
 		if err != nil {
-			s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+			s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 			return
 		}
 	}
 	// Send NICK
 	err = s.conn.Encoder.Encode(&irc.Message{
 		Command: irc.NICK,
-		Params:  []string{s.settings.Nick},
+		Params:  []string{s.Settings.Nick},
 	})
 	// Handle error
 	if err != nil {
-		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+		s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 		return
 	}
 	// Send USER
 	err = s.conn.Encoder.Encode(&irc.Message{
 		Command: irc.USER,
-		Params:  []string{s.settings.Username, "0", "*", s.settings.Realname},
+		Params:  []string{s.Settings.Username, "0", "*", s.Settings.Realname},
 	})
 	// Handle error
 	if err != nil {
-		s.settings.errChan <- IrcServerError{Name: s.name, Error: err}
+		s.Settings.ErrorChannel <- IrcServerError{Name: s.name, Error: err}
 	}
 	return
 }
@@ -136,8 +142,8 @@ type IrcServerSettings struct {
 	Realname      string
 	TLS           bool
 	Username      string
-	errChan       chan IrcServerError
-	inputCallback func(svrName string, msg *irc.Message)
+	ErrorChannel  chan IrcServerError
+	InputCallback func(svrName string, msg *irc.Message)
 }
 
 // NewIrcServer creates an IRC server
@@ -148,7 +154,7 @@ func NewIrcServer(name string, settings *IrcServerSettings) *IrcServer {
 		limitOutput: rate.NewLimiter(1, 10),
 		addr:        fmt.Sprintf("%s:%d", settings.Host, settings.Port),
 		name:        name,
-		settings:    settings,
+		Settings:    settings,
 		// FIXME: should be configurable
 		tlsConfig: &tls.Config{
 			InsecureSkipVerify: true,
