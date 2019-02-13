@@ -37,7 +37,12 @@ func main() {
 
 	// Setup handlers for webserver
 	http.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
-		b.ReloadLua()
+		err := b.ReloadLua()
+		if err != nil {
+			log.Printf("Lua error: %s", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 	http.HandleFunc("/log", func(w http.ResponseWriter, r *http.Request) {
 		w.Write(logger.ShowRing())
@@ -45,11 +50,13 @@ func main() {
 	http.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
 		p, err := os.FindProcess(os.Getpid())
 		if err != nil {
+			log.Printf("Error: %s", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		err = p.Signal(os.Interrupt)
 		if err != nil {
+			log.Printf("Error: %s", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

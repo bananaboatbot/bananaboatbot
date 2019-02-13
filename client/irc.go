@@ -1,4 +1,4 @@
-package bot
+package client
 
 import (
 	"crypto/tls"
@@ -32,7 +32,9 @@ type IrcServerError struct {
 // Close closes the connection to the server
 func (s *IrcServer) Close() {
 	// XXX: QUIT
-	s.conn.Close()
+	if s.conn != nil {
+		s.conn.Close()
+	}
 }
 
 // Dial tries to connect to the server and start processing

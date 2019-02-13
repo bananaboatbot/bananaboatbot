@@ -2,11 +2,18 @@ package bot
 
 import (
 	"crypto/rand"
+	"fmt"
+	"io"
 	"log"
 	"math/big"
+	"net/http"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/fatalbanana/bananaboatbot/client"
 	"github.com/yuin/gopher-lua"
+	"golang.org/x/net/html"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
@@ -17,15 +24,16 @@ type BananaBoatBot struct {
 	curMessage    *irc.Message
 	handlers      map[string]*lua.LFunction
 	handlersMutex sync.RWMutex
+	httpClient    http.Client
+	luaMutex      sync.Mutex
+	luaPool       sync.Pool
+	luaState      *lua.LState
 	nick          string
 	realname      string
 	username      string
-	luaState      *lua.LState
-	luaMutex      sync.Mutex
-	luaPool       sync.Pool
-	servers       map[string]*IrcServer
+	servers       map[string]*client.IrcServer
 	serversMutex  sync.RWMutex
-	serverErrors  chan IrcServerError
+	serverErrors  chan client.IrcServerError
 }
 
 // Close handles shutdown-related tasks
@@ -148,20 +156,31 @@ func (b *BananaBoatBot) ReconnectServers() {
 			// Log the error
 			log.Print(serverErr.Error)
 			// Try reconnect to the server
-			go b.servers[serverErr.Name].Dial()
+			svr, ok := b.servers[serverErr.Name]
+			if ok {
+				go svr.Dial()
+			}
 		}
 	}
 }
 
-func (b *BananaBoatBot) loadLuaCommon() {
+// ReloadLua deals with reloading Lua parts
+func (b *BananaBoatBot) ReloadLua() error {
+	b.luaMutex.Lock()
 
 	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
-		log.Fatalf("Lua error: %s", err)
+		b.luaMutex.Unlock()
+		return err
 	}
 
-	tbl := b.luaState.CheckTable(-1)
+	lv := b.luaState.Get(-1)
+	if lv.Type() != lua.LTTable {
+		b.luaMutex.Unlock()
+		return fmt.Errorf("Unexpected return type: %s", lv.Type())
+	}
+	tbl := lv.(*lua.LTable)
 
-	lv := tbl.RawGetString("nick")
+	lv = tbl.RawGetString("nick")
 	nick := lua.LVAsString(lv)
 	if len(nick) > 0 {
 		b.nick = nick
@@ -259,7 +278,7 @@ func (b *BananaBoatBot) loadLuaCommon() {
 				serverNameStr := lua.LVAsString(serverName)
 				luaServerNames[serverNameStr] = struct{}{}
 				createServer := false
-				serverSettings := &IrcServerSettings{
+				serverSettings := &client.IrcServerSettings{
 					Host:          host,
 					Port:          portInt,
 					TLS:           tls,
@@ -284,7 +303,7 @@ func (b *BananaBoatBot) loadLuaCommon() {
 				}
 				if createServer {
 					// Create new IRC server
-					svr := NewIrcServer(serverNameStr, &IrcServerSettings{
+					svr := client.NewIrcServer(serverNameStr, &client.IrcServerSettings{
 						Host:          host,
 						Port:          portInt,
 						TLS:           tls,
@@ -304,6 +323,11 @@ func (b *BananaBoatBot) loadLuaCommon() {
 			}
 		})
 	}
+
+	// Clear stack and release Lua mutex
+	b.luaState.SetTop(0)
+	b.luaMutex.Unlock()
+
 	// Remove servers no longer defined in Lua
 	b.serversMutex.Lock()
 	for k := range b.servers {
@@ -313,20 +337,13 @@ func (b *BananaBoatBot) loadLuaCommon() {
 		}
 	}
 	b.serversMutex.Unlock()
+
 	// Start any servers which need to be started
 	for _, name := range createdServerNames {
 		go b.servers[name].Dial()
 	}
-	// Restart any servers that need restarting
-	go b.ReconnectServers()
-}
 
-// ReloadLua deals with reloading Lua parts
-func (b *BananaBoatBot) ReloadLua() {
-	b.luaMutex.Lock()
-	b.loadLuaCommon()
-	b.luaState.SetTop(0)
-	b.luaMutex.Unlock()
+	return nil
 }
 
 // luaLibRandom provides access to cryptographic random numbers in Lua
@@ -355,7 +372,7 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 			return
 		}
 		// Get luaState from pool
-		newState := lua.NewState()
+		newState := b.luaPool.Get().(*lua.LState)
 		defer func() {
 			// Clear stack and return state to pool
 			newState.SetTop(0)
@@ -381,11 +398,68 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 	return 0
 }
 
+// luaLibGetTitle tries to get the HTML title of a URL
+func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
+	u := luaState.CheckString(1)
+	resp, err := b.httpClient.Get(u)
+	if err != nil {
+		luaState.Push(lua.LNil)
+		log.Printf("HTTP client error: %s", err)
+		return 1
+	}
+	if ct, ok := resp.Header["Content-Type"]; ok {
+		if ct[0][:9] != "text/html" {
+			luaState.Push(lua.LNil)
+			log.Printf("GET of %s aborted: wrong content-type: %s", u, ct[0])
+			return 1
+		}
+	} else {
+		luaState.Push(lua.LNil)
+		log.Printf("GET of %s aborted: no content-type header", u)
+		return 1
+	}
+	limitedReader := &io.LimitedReader{R: resp.Body, N: 12288}
+	tokenizer := html.NewTokenizer(limitedReader)
+	var title []byte
+	keepTrying := true
+	for keepTrying {
+		tokenType := tokenizer.Next()
+		if tokenType == html.StartTagToken {
+			token := tokenizer.Token()
+			switch token.Data {
+			case "title":
+				keepTrying = false
+				tokenType = tokenizer.Next()
+				if tokenType != html.TextToken {
+					luaState.Push(lua.LNil)
+					log.Printf("GET %s: wrong title token type: %s", u, tokenType)
+					return 1
+				}
+				title = tokenizer.Text()
+			case "body":
+				keepTrying = false
+			}
+		} else if tokenType == html.ErrorToken {
+			luaState.Push(lua.LNil)
+			log.Printf("GET %s: tokenizer error: %s", u, tokenizer.Err())
+			return 1
+		}
+	}
+	if len(title) == 0 {
+		luaState.Push(lua.LNil)
+		log.Printf("GET %s: no title found", u)
+		return 1
+	}
+	luaState.Push(lua.LString(strings.TrimSpace(string(title))))
+	return 1
+}
+
 // luaLibLoader returns a table containing our Lua library functions
 func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	exports := map[string]lua.LGFunction{
-		"random": b.luaLibRandom,
-		"worker": b.luaLibWorker,
+		"get_title": b.luaLibGetTitle,
+		"random":    b.luaLibRandom,
+		"worker":    b.luaLibWorker,
 	}
 	mod := luaState.SetFuncs(luaState.NewTable(), exports)
 	luaState.Push(mod)
@@ -419,8 +493,8 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 		handlers:     make(map[string]*lua.LFunction),
 		nick:         "BananaBoatBot",
 		realname:     "Banana Boat Bot",
-		servers:      make(map[string]*IrcServer),
-		serverErrors: make(chan IrcServerError, 1),
+		servers:      make(map[string]*client.IrcServer),
+		serverErrors: make(chan client.IrcServerError, 1),
 		username:     "bananarama",
 	}
 	b.luaState = b.newLuaState()
@@ -429,15 +503,18 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 			return b.newLuaState()
 		},
 	}
+	b.httpClient = http.Client{
+		Timeout: time.Second * 60,
+	}
 
-	// Get Lua state mutex
-	b.luaMutex.Lock()
 	// Call Lua script and process result
-	b.loadLuaCommon()
-	// Clear Lua stack
-	b.luaState.SetTop(0)
-	// Release Lua State mutex
-	b.luaMutex.Unlock()
+	err := b.ReloadLua()
+	if err != nil {
+		log.Printf("Lua error: %s", err)
+	}
+
+	// Restart any servers that need restarting
+	go b.ReconnectServers()
 
 	// Return BananaBoatBot
 	return &b
