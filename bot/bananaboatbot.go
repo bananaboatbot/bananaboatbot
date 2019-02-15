@@ -70,7 +70,12 @@ func luaParamsFromMessage(svrName string, msg *irc.Message) []lua.LValue {
 }
 
 func (b *BananaBoatBot) handleLuaReturnValues(svrName string, luaState *lua.LState) {
-	// Get table result (XXX: also allow nil?)
+	// Ignore nil
+	lv := luaState.Get(-1)
+	if lv.Type() == lua.LTNil {
+		return
+	}
+	// Get table result
 	res := luaState.CheckTable(-1)
 	// For each numeric index in the table result...
 	res.ForEach(func(index lua.LValue, messageL lua.LValue) {
@@ -81,6 +86,13 @@ func (b *BananaBoatBot) handleLuaReturnValues(svrName string, luaState *lua.LSta
 			// Get 'command' string from table
 			lv := message.RawGetString("command")
 			command = lua.LVAsString(lv)
+			// Get 'net' from table
+			lv = message.RawGetString("net")
+			net := lua.LVAsString(lv)
+			// If missing use the current server
+			if len(net) == 0 {
+				net = svrName
+			}
 			// Get 'params' table from table
 			lv = message.RawGetString("params")
 			if paramsT, ok := lv.(*lua.LTable); ok {
@@ -102,7 +114,7 @@ func (b *BananaBoatBot) handleLuaReturnValues(svrName string, luaState *lua.LSta
 				Params:  params,
 			}
 			// Send it to the server
-			b.servers[svrName].Output <- *ircMessage
+			b.servers[net].Output <- *ircMessage
 		}
 	})
 }
