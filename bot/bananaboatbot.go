@@ -365,12 +365,24 @@ func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 
 // luaLibWorker runs a task in a goroutine
 func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
+	defer luaState.SetTop(0)
+	// First parameter should be function
 	functionProto := luaState.CheckFunction(1).Proto
+	// Rest of parameters are parameters for that function
+	numParams := luaState.GetTop()
+	if numParams == 1 {
+		numParams = 0
+	} else {
+		numParams--
+	}
+	luaParams := make([]lua.LValue, numParams)
+	goIndex := 0
+	for i := 2; goIndex < numParams; i++ {
+		lv := luaState.Get(i)
+		luaParams[goIndex] = lv
+		goIndex++
+	}
 	go func(functionProto *lua.FunctionProto, curNet string, curMessage *irc.Message) {
-		// Avoid crashing if misused
-		if curMessage == nil || curNet == "" {
-			return
-		}
 		// Get luaState from pool
 		newState := b.luaPool.Get().(*lua.LState)
 		defer func() {
@@ -380,8 +392,12 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 		}()
 		// Create function from prototype
 		luaFunction := newState.NewFunctionFromProto(functionProto)
-		// Create parameters for function
-		luaParams := luaParamsFromMessage(curNet, curMessage)
+		// Sanitise parameters
+		for i, v := range luaParams {
+			if v.Type() == lua.LTFunction {
+				luaParams[i] = newState.NewFunctionFromProto(v.(*lua.LFunction).Proto)
+			}
+		}
 		// Call function
 		err := newState.CallByParam(lua.P{
 			Fn:      luaFunction,
