@@ -486,7 +486,7 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 		log.Printf("GET %s: no title found", u)
 		return 1
 	}
-	re := regexp.MustCompile(`[^\n\t]`)
+	re := regexp.MustCompile(`[\n\t]`)
 	title = re.ReplaceAll(title, []byte{})
 	strTitle := strings.TrimSpace(string(title))
 	if len(strTitle) > 400 {
