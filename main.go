@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -30,14 +31,21 @@ func main() {
 	log.SetOutput(logger)
 
 	// Create BananaBoatBot
-	b := bot.NewBananaBoatBot(&bot.BananaBoatBotConfig{
-		DefaultIrcPort: defaultIrcPort,
-		LuaFile:        *luaFile,
-	})
+	ctx, cancel := context.WithCancel(context.Background())
+	b := bot.NewBananaBoatBot(ctx,
+		&bot.BananaBoatBotConfig{
+			DefaultIrcPort: defaultIrcPort,
+			LuaFile:        *luaFile,
+		},
+	)
+	defer func() {
+		cancel()
+		b.Close()
+	}()
 
 	// Setup handlers for webserver
 	http.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
-		err := b.ReloadLua()
+		err := b.ReloadLua(ctx)
 		if err != nil {
 			log.Printf("Lua error: %s", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -64,9 +72,6 @@ func main() {
 	http.Handle("/metrics", promhttp.Handler())
 	// Start webserver
 	go http.ListenAndServe(*webAddr, nil)
-
-	// Invoke shutdown-related tasks on exit
-	defer b.Close()
 
 	// Catch interrupt signal and exit
 	sigChan := make(chan os.Signal, 1)

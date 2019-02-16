@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -69,7 +70,7 @@ func luaParamsFromMessage(svrName string, msg *irc.Message) []lua.LValue {
 	return luaParams
 }
 
-func (b *BananaBoatBot) handleLuaReturnValues(svrName string, luaState *lua.LState) {
+func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, parentCtx context.Context, svrName string, luaState *lua.LState) {
 	// Ignore nil
 	lv := luaState.Get(-1)
 	if lv.Type() == lua.LTNil {
@@ -114,15 +115,20 @@ func (b *BananaBoatBot) handleLuaReturnValues(svrName string, luaState *lua.LSta
 				Params:  params,
 			}
 			// Send it to the server
-			b.servers[net].Output <- *ircMessage
+			svr, ok := b.servers[net]
+			if ok {
+				svr.SendMessage(ctx, parentCtx, ircMessage)
+			} else {
+				log.Printf("Lua eror: Invalid server: %s", net)
+			}
 		}
 	})
 }
 
 // handleHandlers invokes any registered Lua handlers for a command
-func (b *BananaBoatBot) handleHandlers(svrName string, msg *irc.Message) {
+func (b *BananaBoatBot) handleHandlers(ctx context.Context, parentCtx context.Context, svrName string, msg *irc.Message) {
 	// Log message
-	log.Print(msg)
+	log.Printf("[%s] %s", svrName, msg)
 	// Get read mutex for handlers map
 	b.handlersMutex.RLock()
 	// If we have a function corresponding to this command...
@@ -150,7 +156,7 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg *irc.Message) {
 			return
 		}
 		// Handle return values
-		b.handleLuaReturnValues(svrName, b.luaState)
+		b.handleLuaReturnValues(ctx, parentCtx, svrName, b.luaState)
 		// Clear stack
 		b.luaState.SetTop(0)
 	} else {
@@ -160,24 +166,26 @@ func (b *BananaBoatBot) handleHandlers(svrName string, msg *irc.Message) {
 }
 
 // ReconnectServers reconnects servers on error
-func (b *BananaBoatBot) ReconnectServers() {
-	for {
-		select {
-		// Process any errors we might have received
-		case serverErr := <-b.serverErrors:
-			// Log the error
-			log.Print(serverErr.Error)
-			// Try reconnect to the server
-			svr, ok := b.servers[serverErr.Name]
-			if ok {
-				go svr.Dial()
-			}
-		}
+func (b *BananaBoatBot) handleErrors(ctx context.Context, parentCtx context.Context, svrName string, err error) {
+	// Log the error
+	log.Printf("[%s] Connection error: %s", svrName, err)
+	// Wait for context to complete
+	_ = <-ctx.Done()
+	// If parent context is complete just return
+	if parentCtx.Err() != nil {
+		return
+	}
+	// Try reconnect to the server if still configured
+	b.serversMutex.RLock()
+	svr, ok := b.servers[svrName]
+	b.serversMutex.RUnlock()
+	if ok {
+		go svr.Dial(parentCtx)
 	}
 }
 
 // ReloadLua deals with reloading Lua parts
-func (b *BananaBoatBot) ReloadLua() error {
+func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	b.luaMutex.Lock()
 
 	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
@@ -188,7 +196,7 @@ func (b *BananaBoatBot) ReloadLua() error {
 	lv := b.luaState.Get(-1)
 	if lv.Type() != lua.LTTable {
 		b.luaMutex.Unlock()
-		return fmt.Errorf("Unexpected return type: %s", lv.Type())
+		return fmt.Errorf("Lua reload error: unexpected return type: %s", lv.Type())
 	}
 	tbl := lv.(*lua.LTable)
 
@@ -234,8 +242,6 @@ func (b *BananaBoatBot) ReloadLua() error {
 
 	// Make map of server names collected from Lua
 	luaServerNames := make(map[string]struct{}, 0)
-	// Remember which servers we created
-	createdServerNames := make([]string, 0)
 	// Get 'servers' from table
 	lv = tbl.RawGetString("servers")
 	// Get table value
@@ -297,7 +303,7 @@ func (b *BananaBoatBot) ReloadLua() error {
 					Nick:          nick,
 					Realname:      realname,
 					Username:      username,
-					ErrorChannel:  b.serverErrors,
+					ErrorCallback: b.handleErrors,
 					InputCallback: b.handleHandlers,
 				}
 				// Check if server already exists and/or if we need to (re)create it
@@ -314,6 +320,7 @@ func (b *BananaBoatBot) ReloadLua() error {
 					createServer = true
 				}
 				if createServer {
+					log.Printf("Creating new IRC server: %s", serverNameStr)
 					// Create new IRC server
 					svr := client.NewIrcServer(serverNameStr, &client.IrcServerSettings{
 						Host:          host,
@@ -322,15 +329,19 @@ func (b *BananaBoatBot) ReloadLua() error {
 						Nick:          nick,
 						Realname:      realname,
 						Username:      username,
-						ErrorChannel:  b.serverErrors,
+						ErrorCallback: b.handleErrors,
 						InputCallback: b.handleHandlers,
 					})
 					// Set server to map
 					b.serversMutex.Lock()
+					oldSvr, ok := b.servers[serverNameStr]
+					if ok {
+						log.Printf("Destroying pre-existing IRC server: %s", serverNameStr)
+						oldSvr.Close()
+					}
 					b.servers[serverNameStr] = svr
 					b.serversMutex.Unlock()
-					// Remember to start it shortly
-					createdServerNames = append(createdServerNames, serverNameStr)
+					go svr.Dial(ctx)
 				}
 			}
 		})
@@ -344,16 +355,12 @@ func (b *BananaBoatBot) ReloadLua() error {
 	b.serversMutex.Lock()
 	for k := range b.servers {
 		if _, ok := luaServerNames[k]; !ok {
-			b.servers[k].Close()
+			log.Printf("Destroying removed IRC server: %s", k)
+			go b.servers[k].Close()
 			delete(b.servers, k)
 		}
 	}
 	b.serversMutex.Unlock()
-
-	// Start any servers which need to be started
-	for _, name := range createdServerNames {
-		go b.servers[name].Dial()
-	}
 
 	return nil
 }
@@ -421,7 +428,7 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 			return
 		}
 		// Handle return values
-		b.handleLuaReturnValues(curNet, newState)
+		b.handleLuaReturnValues(nil, nil, curNet, newState)
 	}(functionProto, b.curNet, b.curMessage)
 	return 0
 }
@@ -508,7 +515,7 @@ func (b *BananaBoatBot) newLuaState() *lua.LState {
 }
 
 // NewBananaBoatBot creates a new BananaBoatBot
-func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
+func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaBoatBot {
 
 	// We require a path to some script to load
 	if len(config.LuaFile) == 0 {
@@ -536,13 +543,10 @@ func NewBananaBoatBot(config *BananaBoatBotConfig) *BananaBoatBot {
 	}
 
 	// Call Lua script and process result
-	err := b.ReloadLua()
+	err := b.ReloadLua(ctx)
 	if err != nil {
 		log.Printf("Lua error: %s", err)
 	}
-
-	// Restart any servers that need restarting
-	go b.ReconnectServers()
 
 	// Return BananaBoatBot
 	return &b
