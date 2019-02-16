@@ -1,6 +1,7 @@
 package bot_test
 
 import (
+	"context"
 	"io/ioutil"
 	"log"
 	"net"
@@ -81,7 +82,7 @@ func TestTrivial(t *testing.T) {
 			}
 		}
 		b.Config.LuaFile = "../test/trivial2.lua"
-		b.ReloadLua()
+		b.ReloadLua(context.TODO())
 		encoder.Encode(&irc.Message{
 			Command: irc.PRIVMSG,
 			Params:  []string{"testbot1", "HELLO"},
@@ -100,7 +101,7 @@ func TestTrivial(t *testing.T) {
 		conn.Close()
 	}()
 
-	b = bot.NewBananaBoatBot(&bot.BananaBoatBotConfig{
+	b = bot.NewBananaBoatBot(context.TODO(), &bot.BananaBoatBotConfig{
 		DefaultIrcPort: serverPort,
 		LuaFile:        "../test/trivial1.lua",
 	})
