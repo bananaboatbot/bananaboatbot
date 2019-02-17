@@ -3,11 +3,13 @@ package bot
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -366,6 +368,58 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	return nil
 }
 
+type LuisResponse struct {
+	TopScoringIntent LuisTopScoringIntent `json:"topScoringIntent"`
+}
+
+type LuisTopScoringIntent struct {
+	Intent string  `json:"intent"`
+	Score  float64 `json:"score"`
+}
+
+// luaLibLuisPredict predicts intention using luis.ai
+func (b *BananaBoatBot) luaLibLuisPredict(luaState *lua.LState) int {
+	region := luaState.CheckString(1)
+	appID := luaState.CheckString(2)
+	endpointKey := luaState.CheckString(3)
+	utterance := luaState.CheckString(4)
+	if len(utterance) > 500 {
+		utterance = utterance[:500]
+	}
+	luisURL := fmt.Sprintf("https://%s.api.cognitive.microsoft.com/luis/v2.0/apps/%s?subscription-key=%s&verbose=false&q=%s", region, appID, endpointKey, url.QueryEscape(utterance))
+	resp, err := b.httpClient.Get(luisURL)
+	if err != nil {
+		log.Printf("HTTP client error: %s", err)
+		return 0
+	}
+	if ct, ok := resp.Header["Content-Type"]; ok {
+		if ct[0][:16] != "application/json" {
+			log.Printf("Luis GET aborted: wrong content-type: %s", ct[0])
+			return 0
+		}
+	} else {
+		log.Print("Luis GET aborted: no content-type header")
+		return 0
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Print("Luis GET returned non-OK status: %d", resp.StatusCode)
+		return 0
+	}
+	dec := json.NewDecoder(resp.Body)
+	luisResponse := &LuisResponse{}
+	err = dec.Decode(&luisResponse)
+	if err != nil {
+		log.Printf("Luis response decode failed: %s", err)
+		return 0
+	}
+	if luisResponse.TopScoringIntent.Intent == "" {
+		return 0
+	}
+	luaState.Push(lua.LString(luisResponse.TopScoringIntent.Intent))
+	luaState.Push(lua.LNumber(luisResponse.TopScoringIntent.Score))
+	return 2
+}
+
 // luaLibRandom provides access to cryptographic random numbers in Lua
 func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 	i := luaState.ToInt(1)
@@ -499,9 +553,10 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 // luaLibLoader returns a table containing our Lua library functions
 func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	exports := map[string]lua.LGFunction{
-		"get_title": b.luaLibGetTitle,
-		"random":    b.luaLibRandom,
-		"worker":    b.luaLibWorker,
+		"get_title":    b.luaLibGetTitle,
+		"luis_predict": b.luaLibLuisPredict,
+		"random":       b.luaLibRandom,
+		"worker":       b.luaLibWorker,
 	}
 	mod := luaState.SetFuncs(luaState.NewTable(), exports)
 	luaState.Push(mod)
