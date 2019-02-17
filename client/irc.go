@@ -36,9 +36,11 @@ type IrcServerError struct {
 // Close closes the connection to the server
 func (s *IrcServer) Close() {
 	// Send QUIT
-	if s.encoder != nil {
+	if s.encoder != nil && s.conn != nil {
+		s.conn.SetWriteDeadline(time.Now().Add(time.Second * 30))
 		err := s.encoder.Encode(&irc.Message{
 			Command: irc.QUIT,
+			Params:  []string{"Leaving"},
 		})
 		if err != nil {
 			log.Printf("Failed to send QUIT: %s", err)
@@ -121,7 +123,7 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 		} else {
 			s.reconnectExp = s.reconnectExp * 2
 		}
-		s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+		go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
 		return
 	}
 	s.encoder = irc.NewEncoder(s.conn)
@@ -143,7 +145,7 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 					// Close connection
 					s.conn.Close()
 					// Call error callback
-					s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+					go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
 					return
 				}
 				// Invoke callback to handle input
@@ -159,7 +161,7 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 		})
 		// Handle error
 		if err != nil {
-			s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+			go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
 			return
 		}
 	}
@@ -170,7 +172,7 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 	})
 	// Handle error
 	if err != nil {
-		s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+		go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
 		return
 	}
 	// Send USER
@@ -180,7 +182,7 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 	})
 	// Handle error
 	if err != nil {
-		s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+		go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
 	}
 	s.conn.SetReadDeadline(time.Now().Add(time.Second * 30))
 	return
