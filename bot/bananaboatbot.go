@@ -190,15 +190,18 @@ func (b *BananaBoatBot) handleErrors(ctx context.Context, parentCtx context.Cont
 // ReloadLua deals with reloading Lua parts
 func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	b.luaMutex.Lock()
+	defer func() {
+		// Clear stack and release Lua mutex
+		b.luaState.SetTop(0)
+		b.luaMutex.Unlock()
+	}()
 
 	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
-		b.luaMutex.Unlock()
 		return err
 	}
 
 	lv := b.luaState.Get(-1)
 	if lv.Type() != lua.LTTable {
-		b.luaMutex.Unlock()
 		return fmt.Errorf("Lua reload error: unexpected return type: %s", lv.Type())
 	}
 	tbl := lv.(*lua.LTable)
@@ -234,8 +237,9 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 			}
 		})
 	} else {
-		// FIXME: return error?
+		return fmt.Errorf("Lua reload error: unexpected handlers type: %s", lv.Type())
 	}
+
 	// Delete handlers still in map but no longer defined in Lua
 	for k := range b.handlers {
 		if _, ok := luaCommands[k]; !ok {
@@ -350,10 +354,6 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 		})
 	}
 
-	// Clear stack and release Lua mutex
-	b.luaState.SetTop(0)
-	b.luaMutex.Unlock()
-
 	// Remove servers no longer defined in Lua
 	b.serversMutex.Lock()
 	for k := range b.servers {
@@ -368,12 +368,74 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	return nil
 }
 
+type OWMResponse struct {
+	Conditions []OWMCondition `json:"weather"`
+	Main       OWMMain        `json:"main"`
+}
+
+type OWMCondition struct {
+	Description string `json:"description"`
+}
+
+type OWMMain struct {
+	Temperature float64 `json:"temp"`
+}
+
+// luaLibOpenWeatherMap gets weather for a city
+func (b *BananaBoatBot) luaLibOpenWeatherMap(luaState *lua.LState) int {
+	apiKey := luaState.CheckString(1)
+	location := luaState.CheckString(2)
+	owmURL := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?units=metric&APPID=%s&q=%s", apiKey, location)
+	resp, err := b.httpClient.Get(owmURL)
+	if err != nil {
+		log.Printf("HTTP client error: %s", err)
+		return 0
+	}
+	if ct, ok := resp.Header["Content-Type"]; ok {
+		if ct[0][:16] != "application/json" {
+			log.Printf("OWM GET aborted: wrong content-type: %s", ct[0])
+			return 0
+		}
+	} else {
+		log.Print("OWM GET aborted: no content-type header")
+		return 0
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("OWM GET returned non-OK status: %d", resp.StatusCode)
+		return 0
+	}
+	dec := json.NewDecoder(resp.Body)
+	owmResponse := &OWMResponse{}
+	err = dec.Decode(&owmResponse)
+	if err != nil {
+		log.Printf("OWM response decode failed: %s", err)
+		return 0
+	}
+	numConditions := len(owmResponse.Conditions) + 1
+	conditions := make([]string, numConditions)
+	conditions[0] = fmt.Sprintf("%.f°", owmResponse.Main.Temperature)
+	i := 1
+	for _, v := range owmResponse.Conditions {
+		conditions[i] = v.Description
+		i++
+	}
+	luaState.Push(lua.LString(strings.Join(conditions, ", ")))
+	return 1
+}
+
 type LuisResponse struct {
 	TopScoringIntent LuisTopScoringIntent `json:"topScoringIntent"`
+	Entities         []LuisEntity         `json:"entities"`
 }
 
 type LuisTopScoringIntent struct {
 	Intent string  `json:"intent"`
+	Score  float64 `json:"score"`
+}
+
+type LuisEntity struct {
+	Entity string  `json:"entity"`
+	Type   string  `json:"type"`
 	Score  float64 `json:"score"`
 }
 
@@ -402,7 +464,7 @@ func (b *BananaBoatBot) luaLibLuisPredict(luaState *lua.LState) int {
 		return 0
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Print("Luis GET returned non-OK status: %d", resp.StatusCode)
+		log.Printf("Luis GET returned non-OK status: %d", resp.StatusCode)
 		return 0
 	}
 	dec := json.NewDecoder(resp.Body)
@@ -417,7 +479,18 @@ func (b *BananaBoatBot) luaLibLuisPredict(luaState *lua.LState) int {
 	}
 	luaState.Push(lua.LString(luisResponse.TopScoringIntent.Intent))
 	luaState.Push(lua.LNumber(luisResponse.TopScoringIntent.Score))
-	return 2
+	entsTbl := luaState.CreateTable(0, 0)
+	i := 1
+	for _, e := range luisResponse.Entities {
+		entTbl := luaState.CreateTable(0, 0)
+		luaState.RawSet(entTbl, lua.LString("entity"), lua.LString(e.Entity))
+		luaState.RawSet(entTbl, lua.LString("type"), lua.LString(e.Type))
+		luaState.RawSet(entTbl, lua.LString("score"), lua.LNumber(e.Score))
+		luaState.RawSetInt(entsTbl, i, entTbl)
+		i++
+	}
+	luaState.Push(entsTbl)
+	return 3
 }
 
 // luaLibRandom provides access to cryptographic random numbers in Lua
@@ -555,6 +628,7 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	exports := map[string]lua.LGFunction{
 		"get_title":    b.luaLibGetTitle,
 		"luis_predict": b.luaLibLuisPredict,
+		"owm":          b.luaLibOpenWeatherMap,
 		"random":       b.luaLibRandom,
 		"worker":       b.luaLibWorker,
 	}
