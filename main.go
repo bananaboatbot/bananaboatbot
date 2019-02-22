@@ -20,6 +20,7 @@ const (
 func main() {
 	// Set up and parse commandline flags
 	luaFile := flag.String("lua", "", "Path to Lua script")
+	logCommands := flag.Bool("log-commands", false, "Log commands received from servers")
 	ringSize := flag.Int("ring-size", 100, "Number of entries in log ringbuffer")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
@@ -35,6 +36,7 @@ func main() {
 	b := bot.NewBananaBoatBot(ctx,
 		&bot.BananaBoatBotConfig{
 			DefaultIrcPort: defaultIrcPort,
+			LogCommands:    *logCommands,
 			LuaFile:        *luaFile,
 		},
 	)

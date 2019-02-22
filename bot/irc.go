@@ -1,4 +1,4 @@
-package client
+package bot
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -66,8 +67,6 @@ func (s *IrcServer) SendMessage(ctx context.Context, parentCtx context.Context, 
 	err := s.encoder.Encode(msg)
 	// Handle error
 	if err != nil {
-		// Cancel context
-		s.Cancel()
 		// Close connection
 		s.conn.Close()
 		// Call error callback
@@ -102,7 +101,6 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 
 	var ctx context.Context
 	ctx, s.Cancel = context.WithCancel(parentCtx)
-	defer s.Cancel()
 
 	if !s.ReconnectWait(ctx) {
 		log.Printf("Stop trying to connect to %s", s.name)
@@ -129,29 +127,28 @@ func (s *IrcServer) Dial(parentCtx context.Context) {
 	s.encoder = irc.NewEncoder(s.conn)
 	s.decoder = irc.NewDecoder(s.conn)
 	s.reconnectExp = 0
-	// Read input from server and invoke callback
+	// Read loop
 	go func() {
-		// Read loop
-		go func() {
-			for {
-				// Read input from server and invoke callback
-				s.conn.SetReadDeadline(time.Now().Add(time.Second * 300))
-				// Try decode message
-				msg, err := s.decoder.Decode()
-				// Handle error
-				if err != nil {
-					// Cancel context
-					s.Cancel()
-					// Close connection
-					s.conn.Close()
-					// Call error callback
-					go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
-					return
+		for {
+			// Read input from server and invoke callback
+			s.conn.SetReadDeadline(time.Now().Add(time.Second * 300))
+			// Try decode message
+			msg, err := s.decoder.Decode()
+			// Handle error
+			if err != nil || msg.Command == irc.ERROR {
+				// Close connection
+				s.conn.Close()
+				// Set error if needed
+				if err != nil && msg != nil && msg.Command == irc.ERROR {
+					err = fmt.Errorf("[%s] server error: %s", s.name, strings.Join(msg.Params, ", "))
 				}
-				// Invoke callback to handle input
-				go s.Settings.InputCallback(ctx, parentCtx, s.name, msg)
+				// Call error callback
+				go s.Settings.ErrorCallback(ctx, parentCtx, s.name, err)
+				return
 			}
-		}()
+			// Invoke callback to handle input
+			s.Settings.InputCallback(ctx, parentCtx, s.name, msg)
+		}
 	}()
 	// Send password if configured
 	if len(s.Settings.Password) > 0 {

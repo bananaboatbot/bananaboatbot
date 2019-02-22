@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatalbanana/bananaboatbot/client"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
 	irc "gopkg.in/sorcix/irc.v2"
@@ -23,21 +22,34 @@ import (
 
 // BananaBoatBot contains config & state of the bot
 type BananaBoatBot struct {
-	Config        *BananaBoatBotConfig
-	curNet        string
-	curMessage    *irc.Message
-	handlers      map[string]*lua.LFunction
+	// Config contains elements that are passed on initialization
+	Config *BananaBoatBotConfig
+	// curNet is set to friendly name of network we're handling a message from
+	curNet string
+	// curMessage is set to the message being handled
+	curMessage *irc.Message
+	// handlers is a map of IRC command names to Lua functions
+	handlers map[string]*lua.LFunction
+	// handlersMutex protects the handlers map
 	handlersMutex sync.RWMutex
-	httpClient    http.Client
-	luaMutex      sync.Mutex
-	luaPool       sync.Pool
-	luaState      *lua.LState
-	nick          string
-	realname      string
-	username      string
-	servers       map[string]*client.IrcServer
-	serversMutex  sync.RWMutex
-	serverErrors  chan client.IrcServerError
+	// httpClient is used for HTTP requests
+	httpClient http.Client
+	// luaMutex protects shared Lua state
+	luaMutex sync.Mutex
+	// luaPool is a pool for when shared state is undesirable
+	luaPool sync.Pool
+	// luaState contains shared Lua state
+	luaState *lua.LState
+	// nick is the default nick of the bot
+	nick string
+	// realname is the default "real name" of the bot
+	realname string
+	// username is the default username of the bot
+	username string
+	// servers is a map of friendly names to IRC servers
+	servers map[string]*IrcServer
+	// serversMutex protects servers
+	serversMutex sync.RWMutex
 }
 
 // Close handles shutdown-related tasks
@@ -130,8 +142,10 @@ func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, parentCtx con
 
 // handleHandlers invokes any registered Lua handlers for a command
 func (b *BananaBoatBot) handleHandlers(ctx context.Context, parentCtx context.Context, svrName string, msg *irc.Message) {
-	// Log message
-	log.Printf("[%s] %s", svrName, msg)
+	if b.Config.LogCommands {
+		// Log message
+		log.Printf("[%s] %s", svrName, msg)
+	}
 	// Get read mutex for handlers map
 	b.handlersMutex.RLock()
 	// If we have a function corresponding to this command...
@@ -303,7 +317,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				serverNameStr := lua.LVAsString(serverName)
 				luaServerNames[serverNameStr] = struct{}{}
 				createServer := false
-				serverSettings := &client.IrcServerSettings{
+				serverSettings := &IrcServerSettings{
 					Host:          host,
 					Port:          portInt,
 					TLS:           tls,
@@ -329,7 +343,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				if createServer {
 					log.Printf("Creating new IRC server: %s", serverNameStr)
 					// Create new IRC server
-					svr := client.NewIrcServer(serverNameStr, &client.IrcServerSettings{
+					svr := NewIrcServer(serverNameStr, &IrcServerSettings{
 						Host:          host,
 						Port:          portInt,
 						TLS:           tls,
@@ -495,19 +509,24 @@ func (b *BananaBoatBot) luaLibLuisPredict(luaState *lua.LState) int {
 
 // luaLibRandom provides access to cryptographic random numbers in Lua
 func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
+	// First argument should be int for upper bound (probably at least 1)
 	i := luaState.ToInt(1)
-	var r *big.Int
-	var err error
-	if i != 1 {
-		r, err = rand.Int(rand.Reader, big.NewInt(int64(i)))
-	}
-	if err != nil {
-		panic(err)
-	}
+	// Generate random integer given user supplied range
+	r, err := rand.Int(rand.Reader, big.NewInt(int64(i)))
+	// Add 1 to result
 	res := r.Int64() + 1
+	// Push result to stack
 	ln := lua.LNumber(res)
 	luaState.Push(ln)
-	return 1
+	// Push error to stack
+	if err == nil {
+		// It might be nil in which case push nil
+		luaState.Push(lua.LNil)
+	} else {
+		// Otherwise push the error text
+		luaState.Push(lua.LString(err.Error()))
+	}
+	return 2
 }
 
 // luaLibWorker runs a task in a goroutine
@@ -529,6 +548,7 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 		luaParams[goIndex] = lv
 		goIndex++
 	}
+	// Run function in new goroutine
 	go func(functionProto *lua.FunctionProto, curNet string, curMessage *irc.Message) {
 		// Get luaState from pool
 		newState := b.luaPool.Get().(*lua.LState)
@@ -563,13 +583,17 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 
 // luaLibGetTitle tries to get the HTML title of a URL
 func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
+	// First argument should be some URL to try process
 	u := luaState.CheckString(1)
+	// Make request
 	resp, err := b.httpClient.Get(u)
+	// Handle HTTP request failure
 	if err != nil {
 		luaState.Push(lua.LNil)
 		log.Printf("HTTP client error: %s", err)
 		return 1
 	}
+	// Expect to see text/html content-type
 	if ct, ok := resp.Header["Content-Type"]; ok {
 		if ct[0][:9] != "text/html" {
 			luaState.Push(lua.LNil)
@@ -581,15 +605,20 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 		log.Printf("GET of %s aborted: no content-type header", u)
 		return 1
 	}
+	// Read up to 12288 bytes
 	limitedReader := &io.LimitedReader{R: resp.Body, N: 12288}
+	// Create new tokenizer
 	tokenizer := html.NewTokenizer(limitedReader)
 	var title []byte
+	// Is it time to give up yet?
 	keepTrying := true
 	for keepTrying {
+		// Get next token
 		tokenType := tokenizer.Next()
 		if tokenType == html.StartTagToken {
 			token := tokenizer.Token()
 			switch token.Data {
+			// We found title tag, get title data
 			case "title":
 				keepTrying = false
 				tokenType = tokenizer.Next()
@@ -599,23 +628,29 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 					return 1
 				}
 				title = tokenizer.Text()
+			// We reached body tag, stop processing
 			case "body":
 				keepTrying = false
 			}
+			// Parser error
 		} else if tokenType == html.ErrorToken {
 			luaState.Push(lua.LNil)
 			log.Printf("GET %s: tokenizer error: %s", u, tokenizer.Err())
 			return 1
 		}
 	}
+	// We didn't meet error nor manage to find title
 	if len(title) == 0 {
 		luaState.Push(lua.LNil)
 		log.Printf("GET %s: no title found", u)
 		return 1
 	}
+	// Strip newlines and tabs from the title
 	re := regexp.MustCompile(`[\n\t]`)
 	title = re.ReplaceAll(title, []byte{})
+	// Trim whitespace around the title
 	strTitle := strings.TrimSpace(string(title))
+	// Return up to 400 characters
 	if len(strTitle) > 400 {
 		strTitle = strTitle[:400]
 	}
@@ -625,6 +660,7 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 
 // luaLibLoader returns a table containing our Lua library functions
 func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
+	// Create map of function names to functions
 	exports := map[string]lua.LGFunction{
 		"get_title":    b.luaLibGetTitle,
 		"luis_predict": b.luaLibLuisPredict,
@@ -632,13 +668,18 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 		"random":       b.luaLibRandom,
 		"worker":       b.luaLibWorker,
 	}
+	// Convert map to Lua table and push to stack
 	mod := luaState.SetFuncs(luaState.NewTable(), exports)
 	luaState.Push(mod)
 	return 1
 }
 
 type BananaBoatBotConfig struct {
-	LuaFile        string
+	// Path to script to be loaded
+	LuaFile string
+	// Shall we log each received command or not
+	LogCommands bool
+	// Default IRC port (generally 6667) - useful for tests
 	DefaultIrcPort int
 }
 
@@ -660,20 +701,22 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 
 	// Create BananaBoatBot
 	b := BananaBoatBot{
-		Config:       config,
-		handlers:     make(map[string]*lua.LFunction),
-		nick:         "BananaBoatBot",
-		realname:     "Banana Boat Bot",
-		servers:      make(map[string]*client.IrcServer),
-		serverErrors: make(chan client.IrcServerError, 1),
-		username:     "bananarama",
+		Config:   config,
+		handlers: make(map[string]*lua.LFunction),
+		nick:     "BananaBoatBot",
+		realname: "Banana Boat Bot",
+		servers:  make(map[string]*IrcServer),
+		username: "bananarama",
 	}
+	// Create new shared Lua state
 	b.luaState = b.newLuaState()
+	// Create new pool of Lua state
 	b.luaPool = sync.Pool{
 		New: func() interface{} {
 			return b.newLuaState()
 		},
 	}
+	// Create HTTP client
 	b.httpClient = http.Client{
 		Timeout: time.Second * 60,
 	}
