@@ -41,7 +41,7 @@ steps:
     gocov convert cover.out > cover.json
     gocov-xml < cover.json > cover.xml
     mkdir coverage
-    gocov-html < coverage.json > coverage/index.html
+    gocov-html < cover.json > coverage/index.html
   workingDirectory: '$(modulePath)'
   displayName: 'Process test output'
 
