@@ -35,11 +35,6 @@ steps:
   displayName: 'Fetch dependencies'
 
 - script: |
-    go test ./... -cover -race -coverprofile=cover.out
-  workingDirectory: '$(modulePath)'
-  displayName: 'Run tests'
-
-- script: |
     go get github.com/axw/gocov/gocov
     go get github.com/AlekSi/gocov-xml
     go get github.com/matm/gocov-html
@@ -48,13 +43,17 @@ steps:
   displayName: 'Install test helpers'
 
 - script: |
+    go test ./... -v -cover -race -coverprofile=cover.out | go-junit-report > report.xml
+  workingDirectory: '$(modulePath)'
+  displayName: 'Run tests'
+
+- script: |
     gocov convert cover.out > cover.json
     gocov-xml < cover.json > cover.xml
     mkdir coverage
     gocov-html < cover.json > coverage/index.html
-    go-junit-report < cover.out > report.xml
   workingDirectory: '$(modulePath)'
-  displayName: 'Process test output'
+  displayName: 'Collect code coverage'
 
 - task: PublishCodeCoverageResults@1
   inputs:
