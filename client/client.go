@@ -23,7 +23,6 @@ type IrcServerInterface interface {
 
 // IrcServer contains everything related to a given IRC server
 type IrcServer struct {
-	ircServer    IrcServerInterface
 	Cancel       context.CancelFunc
 	addr         string
 	conn         net.Conn
@@ -95,10 +94,7 @@ func (s *IrcServer) reconnectWait(ctx context.Context) {
 	}
 	p := s.Settings.MaxReconnect * math.Tanh(s.reconnectExp)
 	log.Printf("Sleeping for %.2f seconds before reconnecting to %s", p, s.name)
-	select {
-	case <-time.After(time.Duration(p) * time.Second):
-		return
-	}
+	<-time.After(time.Duration(p) * time.Second)
 }
 
 // Dial tries to connect to the server and start processing
@@ -174,7 +170,6 @@ func (s *IrcServer) Dial(ctx context.Context) {
 			return
 		}
 	}
-	return
 }
 
 // IrcServerSettings contains all configuration for an IRC server

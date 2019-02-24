@@ -37,11 +37,12 @@ func TestError(t *testing.T) {
 	defer l.Close()
 
 	done := make(chan struct{}, 1)
+	errors := make(chan error, 2)
 
 	go func() {
 		conn, err := l.Accept()
 		if err != nil {
-			t.Fatal(err)
+			errors <- err
 		}
 		dec := irc.NewDecoder(conn)
 		enc := irc.NewEncoder(conn)
@@ -49,7 +50,7 @@ func TestError(t *testing.T) {
 			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
 			msg, err := dec.Decode()
 			if err != nil {
-				t.Fatal(err)
+				errors <- err
 			}
 			if msg.Command == "USER" {
 				break
@@ -84,7 +85,12 @@ func TestError(t *testing.T) {
 	ctx := context.TODO()
 	svr.Dial(ctx)
 	// Wait for error
-	<-done
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	case <-done:
+		break
+	}
 	// Destroy server
 	svr.Close(ctx)
 }
@@ -96,18 +102,19 @@ func TestSendAndQuit(t *testing.T) {
 
 	ready := make(chan struct{})
 	done := make(chan struct{})
+	errors := make(chan error, 2)
 
 	go func() {
 		conn, err := l.Accept()
 		if err != nil {
-			t.Fatal(err)
+			errors <- err
 		}
 		dec := irc.NewDecoder(conn)
 		for {
 			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
 			msg, err := dec.Decode()
 			if err != nil {
-				t.Fatal(err)
+				errors <- err
 			}
 			if msg.Command == irc.USER {
 				ready <- struct{}{}
@@ -141,7 +148,12 @@ func TestSendAndQuit(t *testing.T) {
 	ctx := context.TODO()
 	svr.Dial(ctx)
 	// Wait for server to acknowledge USER
-	<-ready
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	case <-ready:
+		break
+	}
 	// Send message
 	svr.SendMessage(ctx, &irc.Message{
 		Command: "PRIVMSG",
@@ -150,5 +162,10 @@ func TestSendAndQuit(t *testing.T) {
 	// Destroy server
 	svr.Close(ctx)
 	// Wait for fake server to acknowledge QUIT
-	<-done
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	case <-done:
+		break
+	}
 }

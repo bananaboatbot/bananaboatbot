@@ -206,7 +206,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 
 	lv := b.luaState.Get(-1)
 	if lv.Type() != lua.LTTable {
-		return fmt.Errorf("Lua reload error: unexpected return type: %s", lv.Type())
+		return fmt.Errorf("lua reload error: unexpected return type: %s", lv.Type())
 	}
 	tbl := lv.(*lua.LTable)
 
@@ -231,7 +231,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	lv = tbl.RawGetString("handlers")
 	defer b.handlersMutex.Unlock()
 	b.handlersMutex.Lock()
-	luaCommands := make(map[string]struct{}, 0)
+	luaCommands := make(map[string]struct{})
 	if handlerTbl, ok := lv.(*lua.LTable); ok {
 		handlerTbl.ForEach(func(commandName lua.LValue, handlerFuncL lua.LValue) {
 			if handlerFunc, ok := handlerFuncL.(*lua.LFunction); ok {
@@ -241,7 +241,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 			}
 		})
 	} else {
-		return fmt.Errorf("Lua reload error: unexpected handlers type: %s", lv.Type())
+		return fmt.Errorf("lua reload error: unexpected handlers type: %s", lv.Type())
 	}
 
 	// Delete handlers still in map but no longer defined in Lua
@@ -252,7 +252,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	}
 
 	// Make map of server names collected from Lua
-	luaServerNames := make(map[string]struct{}, 0)
+	luaServerNames := make(map[string]struct{})
 	// Get 'servers' from table
 	lv = tbl.RawGetString("servers")
 	// Get table value
@@ -541,11 +541,9 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 	go func(functionProto *lua.FunctionProto, curNet string, curMessage *irc.Message) {
 		// Get luaState from pool
 		newState := b.luaPool.Get().(*lua.LState)
-		newState.SetContext(luaState.Context())
 		defer func() {
 			// Clear stack and return state to pool
 			newState.SetTop(0)
-			newState.RemoveContext()
 			b.luaPool.Put(newState)
 		}()
 		// Create function from prototype
@@ -567,7 +565,7 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 			return
 		}
 		// Handle return values
-		b.handleLuaReturnValues(nil, curNet, newState)
+		b.handleLuaReturnValues(newState.Context(), curNet, newState)
 	}(functionProto, b.curNet, b.curMessage)
 	return 0
 }
@@ -683,9 +681,7 @@ type BananaBoatBotConfig struct {
 func (b *BananaBoatBot) newLuaState(ctx context.Context) *lua.LState {
 	// Create new Lua state
 	luaState := lua.NewState()
-	if ctx != nil {
-		luaState.SetContext(ctx)
-	}
+	luaState.SetContext(ctx)
 	// Provide access to our library functions in Lua
 	luaState.PreloadModule("bananaboat", b.luaLibLoader)
 	return luaState
@@ -718,7 +714,7 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 	// Create new pool of Lua state
 	b.luaPool = sync.Pool{
 		New: func() interface{} {
-			return b.newLuaState(nil)
+			return b.newLuaState(ctx)
 		},
 	}
 	// Create HTTP client

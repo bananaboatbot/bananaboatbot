@@ -19,8 +19,7 @@ var (
 )
 
 type mockIrcServer struct {
-	ircServer client.IrcServerInterface
-	settings  *client.IrcServerSettings
+	settings *client.IrcServerSettings
 }
 
 func init() {
@@ -112,7 +111,7 @@ func TestLuis(t *testing.T) {
 	defer ts.Close()
 	ctx := context.TODO()
 	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:  true,
+		LogCommands:     true,
 		LuaFile:         "../test/luis.lua",
 		LuisURLTemplate: fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL),
 		MaxReconnect:    1,
@@ -155,7 +154,7 @@ func TestOwm(t *testing.T) {
 	defer ts.Close()
 	ctx := context.TODO()
 	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:  true,
+		LogCommands:    true,
 		LuaFile:        "../test/owm.lua",
 		OwmURLTemplate: fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL),
 		MaxReconnect:   1,
