@@ -1,0 +1,69 @@
+strategy:
+  matrix:
+    linux:
+      imageName: 'ubuntu-16.04'
+    mac:
+      imageName: 'macos-10.13'
+    windows:
+      imageName: 'win1803'
+
+trigger:
+- master
+
+variables:
+  GO111MODULE: 'on'
+  GOBIN:  '$(GOPATH)/bin' # Go binaries path
+  GOROOT: '/usr/local/go1.11' # Go installation path
+  GOPATH: '$(system.defaultWorkingDirectory)/gopath' # Go workspace path
+  modulePath: '$(GOPATH)/src/github.com/$(build.repository.name)' # Path to the module's code
+
+steps:
+- script: |
+    mkdir -p '$(GOBIN)'
+    mkdir -p '$(GOPATH)/pkg'
+    mkdir -p '$(modulePath)'
+    shopt -s extglob
+    shopt -s dotglob
+    mv !(gopath) '$(modulePath)'
+    echo '##vso[task.prependpath]$(GOBIN)'
+    echo '##vso[task.prependpath]$(GOROOT)/bin'
+  displayName: 'Set up the Go workspace'
+
+- script: |
+    go get
+  workingDirectory: '$(modulePath)'
+  displayName: 'Fetch dependencies'
+
+- script: |
+    go get github.com/axw/gocov/gocov
+    go get github.com/AlekSi/gocov-xml
+    go get github.com/matm/gocov-html
+    go get github.com/jstemmer/go-junit-report
+  workingDirectory: '$(modulePath)'
+  displayName: 'Install test helpers'
+
+- script: |
+    go test ./... -test.timeout=30s -v -cover -race -coverprofile=cover.out | go-junit-report > report.xml
+  workingDirectory: '$(modulePath)'
+  displayName: 'Run tests'
+
+- script: |
+    gocov convert cover.out > cover.json
+    gocov-xml < cover.json > cover.xml
+    mkdir coverage
+    gocov-html < cover.json > coverage/index.html
+  workingDirectory: '$(modulePath)'
+  displayName: 'Generate code coverage report'
+
+- task: PublishCodeCoverageResults@1
+  inputs:
+    codeCoverageTool: Cobertura
+    summaryFileLocation: $(modulePath)/cover.xml
+    reportDirectory: $(modulePath)/coverage
+  displayName: Publish code coverage report
+
+- task: PublishTestResults@2
+  inputs:
+    testRunner: JUnit
+    testResultsFiles: $(modulePath)/report.xml
+  displayName: Publish test summary
