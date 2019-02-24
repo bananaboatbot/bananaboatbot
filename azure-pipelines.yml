@@ -43,6 +43,7 @@ steps:
     go get github.com/axw/gocov/gocov
     go get github.com/AlekSi/gocov-xml
     go get github.com/matm/gocov-html
+    go get github.com/jstemmer/go-junit-report
   workingDirectory: '$(modulePath)'
   displayName: 'Install test helpers'
 
@@ -51,11 +52,19 @@ steps:
     gocov-xml < cover.json > cover.xml
     mkdir coverage
     gocov-html < cover.json > coverage/index.html
+    go-junit-report < cover.out > report.xml
   workingDirectory: '$(modulePath)'
   displayName: 'Process test output'
 
-- task: PublishCodeCoverageResults@1
+- task:
   inputs:
     codeCoverageTool: Cobertura 
     summaryFileLocation: $(modulePath)/cover.xml
     reportDirectory: $(modulePath)/coverage
+  displayName: Publish code coverage
+
+- task:
+  inputs:
+    testRunner: JUnit
+    testResultsFiles: $(modulePath)/report.xml
+  displayName: Publish test summary
