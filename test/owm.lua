@@ -7,10 +7,8 @@ bot.handlers = {
     local target = "" -- nick not set
     if message == "weather" then
       bb.worker(function(target)
-	print(string.format("IDIOT ->%s<-", target or 'FUCKING NIL'))
         local bb = require 'bananaboat'
         local weather = bb.owm("key", "johannesburg,za")
-	print(string.format("WTF ->%s<-", weather))
         return { {command = 'PRIVMSG', params = {target, weather}} }
       end, target)
     end
