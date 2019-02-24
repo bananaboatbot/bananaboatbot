@@ -30,6 +30,23 @@ steps:
   displayName: 'Set up the Go workspace'
 
 - script: |
-    go test ./... -cover -race
+    go test ./... -cover -race -coverprofile=cover.out
   workingDirectory: '$(modulePath)'
-  displayName: 'Get dependencies, then build'
+  displayName: 'Run tests'
+
+- script: |
+    go get github.com/axw/gocov/gocov
+    go get github.com/AlekSi/gocov-xml
+    go get -u gopkg.in/matm/v1/gocov-html
+    gocov convert cover.out > cover.json
+    gocov-xml < cover.json > cover.xml
+    mkdir coverage
+    gocov-html < coverage.json > coverage/index.html
+  workingDirectory: '$(modulePath)'
+  displayName: 'Process test output'
+
+- task: PublishCodeCoverageResults@1
+  inputs:
+    codeCoverageTool: Cobertura 
+    summaryFileLocation: $(modulePath)/cover.xml
+    reportDirectory: $(modulePath)/coverage
