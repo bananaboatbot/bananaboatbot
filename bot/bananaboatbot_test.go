@@ -2,121 +2,202 @@ package bot_test
 
 import (
 	"context"
-	"io/ioutil"
-	"log"
-	"net"
-	"strconv"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/fatalbanana/bananaboatbot/bot"
+	"github.com/fatalbanana/bananaboatbot/client"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
-func TestTrivial(t *testing.T) {
-	log.SetOutput(ioutil.Discard)
-	var done atomic.Value
-	done.Store(false)
-	gotHello := false
-	gotGoodbye := false
+var (
+	messages chan (irc.Message)
+)
 
-	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
+type mockIrcServer struct {
+	ircServer client.IrcServerInterface
+	settings  *client.IrcServerSettings
+}
+
+func init() {
+	messages = make(chan (irc.Message), 10)
+}
+
+func newMockIrcServer(name string, settings *client.IrcServerSettings) interface{} {
+	return &mockIrcServer{
+		settings: settings,
 	}
-	addr := l.Addr().String()
-	index := strings.LastIndex(addr, ":")
-	serverPort, err := strconv.Atoi(addr[index+1:])
-	if err != nil {
-		t.Fatal(err)
-	}
+}
 
-	var b *bot.BananaBoatBot
-	ready := make(chan struct{}, 0)
+func (m *mockIrcServer) SendMessage(ctx context.Context, msg *irc.Message) bool {
+	messages <- *msg
+	return true
+}
 
-	go func() {
-		<-ready
-		conn, err := l.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoder := irc.NewEncoder(conn)
-		decoder := irc.NewDecoder(conn)
-		for {
-			msg, err := decoder.Decode()
-			if err != nil {
-				t.Fatal(err)
-			}
-			// XXX: capabilities
-			if msg.Command == irc.USER {
-				break
-			}
-		}
-		encoder.Encode(&irc.Message{
-			Command: irc.RPL_WELCOME,
-		})
-		fakePrefix := &irc.Prefix{
-			Name: "bob",
-			User: "ubob",
-			Host: "hbob",
-		}
-		encoder.Encode(&irc.Message{
-			Command: irc.PRIVMSG,
-			Params:  []string{"testbot1", "HELLO"},
-			Prefix:  fakePrefix,
-		})
-		encoder.Encode(&irc.Message{
-			Command: irc.PRIVMSG,
-			Params:  []string{"testbot1", "asdf"},
-			Prefix:  fakePrefix,
-		})
-		msg, err := decoder.Decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if msg.Command == irc.PRIVMSG {
-			if msg.Params[1] == "HELLO" {
-				gotHello = true
-			}
-		}
-		b.Config.LuaFile = "../test/trivial2.lua"
-		b.ReloadLua(context.TODO())
-		encoder.Encode(&irc.Message{
-			Command: irc.PRIVMSG,
-			Params:  []string{"testbot1", "HELLO"},
-			Prefix:  fakePrefix,
-		})
-		msg, err = decoder.Decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if msg.Command == irc.PRIVMSG {
-			if msg.Params[1] == "GOODBYE" {
-				gotGoodbye = true
-			}
-		}
-		done.Store(true)
-		conn.Close()
-	}()
+func (m *mockIrcServer) Dial(parentCtx context.Context) {
+}
 
-	b = bot.NewBananaBoatBot(context.TODO(), &bot.BananaBoatBotConfig{
-		DefaultIrcPort: serverPort,
-		LuaFile:        "../test/trivial1.lua",
+func (m *mockIrcServer) Close(parentCtx context.Context) {
+}
+
+func (m *mockIrcServer) GetSettings() *client.IrcServerSettings {
+	return m.settings
+}
+
+func TestReload(t *testing.T) {
+	ctx := context.TODO()
+	// Create BananaBoatBot
+	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+		LogCommands:  true,
+		LuaFile:      "../test/trivial1.lua",
+		MaxReconnect: 1,
+		NewIrcServer: newMockIrcServer,
 	})
-	ready <- struct{}{}
-
-	for !done.Load().(bool) {
-		time.Sleep(time.Millisecond)
+	// Say hello
+	b.HandleHandlers(ctx, "test", &irc.Message{
+		Command: irc.PRIVMSG,
+		Params:  []string{"testbot1", "HELLO"},
+	})
+	msg := <-messages
+	if msg.Command != irc.PRIVMSG {
+		t.Fatalf("Got wrong message type in response1: %s", msg.Command)
 	}
-
-	if !gotHello {
-		t.Fatal("Bot didn't say hello")
+	if msg.Params[1] != "HELLO" {
+		t.Fatalf("Got wrong parameters in response1: %s", strings.Join(msg.Params, ","))
 	}
-	if !gotGoodbye {
-		t.Fatal("Bot didn't say goodbye")
+	// Set new config file and reload Lua
+	b.Config.LuaFile = "../test/trivial2.lua"
+	b.ReloadLua(ctx)
+	// Send another PM
+	b.HandleHandlers(ctx, "test", &irc.Message{
+		Command: irc.PRIVMSG,
+		Params:  []string{"testbot1", "HELLO"},
+	})
+	// Get response
+	msg = <-messages
+	// This time bot must say GOODBYE
+	if msg.Command != irc.PRIVMSG {
+		t.Fatalf("Got wrong message type in response2: %s", msg.Command)
 	}
+	if msg.Params[1] != "GOODBYE" {
+		t.Fatalf("Got wrong parameters in response2: %s", strings.Join(msg.Params, ","))
+	}
+}
 
-	b.Close()
+func TestLuis(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := json.Marshal(&bot.LuisResponse{
+			Entities: []bot.LuisEntity{
+				bot.LuisEntity{
+					Entity: "WORLD",
+					Score:  0.5,
+					Type:   "Thing",
+				},
+			},
+			TopScoringIntent: bot.LuisTopScoringIntent{
+				Intent: "Hello",
+				Score:  0.5,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-type", "application/json")
+		w.Write(b)
+	}))
+	defer ts.Close()
+	ctx := context.TODO()
+	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+		LogCommands:  true,
+		LuaFile:         "../test/luis.lua",
+		LuisURLTemplate: fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL),
+		MaxReconnect:    1,
+		NewIrcServer:    newMockIrcServer,
+	})
+	// Say hello
+	b.HandleHandlers(ctx, "test", &irc.Message{
+		Command: irc.PRIVMSG,
+		Params:  []string{"testbot1", "HELLO"},
+	})
+	msg := <-messages
+	if msg.Command != irc.PRIVMSG {
+		t.Fatalf("Got wrong message type in response: %s", msg.Command)
+	}
+	if msg.Params[1] != "howdy WORLD" &&
+		msg.Params[1] != "hey WORLD" &&
+		msg.Params[1] != "hi WORLD" {
+		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
+	}
+}
+
+func TestOwm(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := json.Marshal(&bot.OWMResponse{
+			Conditions: []bot.OWMCondition{
+				bot.OWMCondition{
+					Description: "clear sky",
+				},
+			},
+			Main: bot.OWMMain{
+				Temperature: 21.3,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-type", "application/json")
+		w.Write(b)
+	}))
+	defer ts.Close()
+	ctx := context.TODO()
+	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+		LogCommands:  true,
+		LuaFile:        "../test/owm.lua",
+		OwmURLTemplate: fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL),
+		MaxReconnect:   1,
+		NewIrcServer:   newMockIrcServer,
+	})
+	// Say weather
+	b.HandleHandlers(ctx, "test", &irc.Message{
+		Command: irc.PRIVMSG,
+		Params:  []string{"testbot1", "weather"},
+	})
+	msg := <-messages
+	if msg.Command != irc.PRIVMSG {
+		t.Fatalf("Got wrong message type in response: %s", msg.Command)
+	}
+	if msg.Params[1] != "21°, clear sky" {
+		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
+	}
+}
+
+func TestTitleScrape(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-type", "text/html")
+		w.Write([]byte(`<html><head><title>asdf</title></head></html>`))
+	}))
+	defer ts.Close()
+	ctx := context.TODO()
+	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+		LogCommands:  true,
+		LuaFile:      "../test/get_title.lua",
+		MaxReconnect: 1,
+		NewIrcServer: newMockIrcServer,
+	})
+	// Say URL
+	b.HandleHandlers(ctx, "test", &irc.Message{
+		Command: irc.PRIVMSG,
+		Params:  []string{"testbot1", ts.URL},
+	})
+	msg := <-messages
+	if msg.Command != irc.PRIVMSG {
+		t.Fatalf("Got wrong message type in response: %s", msg.Command)
+	}
+	if msg.Params[1] != "asdf" {
+		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
+	}
 }

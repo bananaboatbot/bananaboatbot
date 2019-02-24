@@ -2,11 +2,9 @@ local bot = {}
 local botnick = 'testbot1'
 bot.handlers = {
   ['PRIVMSG'] = function(net, nick, user, host, channel, message)
-    local ret = {}
     if channel == botnick and message == 'HELLO' then
-      table.insert(ret, {command = 'PRIVMSG', params = {nick, 'HELLO'}})
+      return { {command = 'PRIVMSG', params = {nick, 'HELLO'}} }
     end
-    return ret
   end,
 }
 bot.servers = {

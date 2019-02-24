@@ -9,17 +9,16 @@ import (
 	"os/signal"
 
 	"github.com/fatalbanana/bananaboatbot/bot"
+	"github.com/fatalbanana/bananaboatbot/client"
 	blog "github.com/fatalbanana/bananaboatbot/log"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-)
-
-const (
-	defaultIrcPort = 6667
 )
 
 func main() {
 	// Set up and parse commandline flags
 	luaFile := flag.String("lua", "", "Path to Lua script")
+	logCommands := flag.Bool("log-commands", false, "Log commands received from servers")
+	maxReconnect := flag.Int("max-reconnect", 3600, "Maximum reconnect interval in seconds")
 	ringSize := flag.Int("ring-size", 100, "Number of entries in log ringbuffer")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
@@ -34,13 +33,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := bot.NewBananaBoatBot(ctx,
 		&bot.BananaBoatBotConfig{
-			DefaultIrcPort: defaultIrcPort,
-			LuaFile:        *luaFile,
+			LogCommands:  *logCommands,
+			LuaFile:      *luaFile,
+			MaxReconnect: *maxReconnect,
+			NewIrcServer: client.NewIrcServer,
 		},
 	)
 	defer func() {
 		cancel()
-		b.Close()
+		b.Close(ctx)
 	}()
 
 	// Setup handlers for webserver

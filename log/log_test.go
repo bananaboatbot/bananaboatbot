@@ -11,7 +11,6 @@ import (
 func TestLogger(t *testing.T) {
 	logger := blog.NewLogger(&blog.LoggerConfig{
 		RingSize: 2,
-		Quiet:    true,
 	})
 	log.SetOutput(logger)
 	log.SetFlags(0)
