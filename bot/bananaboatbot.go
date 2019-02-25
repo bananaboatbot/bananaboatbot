@@ -48,13 +48,15 @@ type BananaBoatBot struct {
 	// username is the default username of the bot
 	username string
 	// servers is a map of friendly names to IRC servers
-	servers sync.Map
+	Servers sync.Map
+	// mutex for handling of servers
+	serversMutex sync.Mutex
 }
 
 // Close handles shutdown-related tasks
 func (b *BananaBoatBot) Close(ctx context.Context) {
 	log.Print("Shutting down")
-	b.servers.Range(func(k, value interface{}) bool {
+	b.Servers.Range(func(k, value interface{}) bool {
 		value.(client.IrcServerInterface).Close(ctx)
 		return true
 	})
@@ -128,9 +130,14 @@ func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, svrName strin
 				Params:  params,
 			}
 			// Send it to the server
-			svr, ok := b.servers.Load(net)
+			svr, ok := b.Servers.Load(net)
 			if ok {
-				svr.(client.IrcServerInterface).SendMessage(ctx, ircMessage)
+				select {
+				case svr.(client.IrcServerInterface).GetMessages() <- *ircMessage:
+					break
+				default:
+					log.Printf("Channel full, message to server dropped: %s", ircMessage)
+				}
 			} else {
 				log.Printf("Lua eror: Invalid server: %s", net)
 			}
@@ -184,15 +191,33 @@ func (b *BananaBoatBot) HandleHandlers(ctx context.Context, svrName string, msg 
 func (b *BananaBoatBot) handleErrors(ctx context.Context, svrName string, err error) {
 	// Log the error
 	log.Printf("[%s] Connection error: %s", svrName, err)
-	// Try reconnect to the server if still configured
-	svr, ok := b.servers.Load(svrName)
-	if ok {
-		go func() {
-			s := svr.(client.IrcServerInterface)
-			s.ReconnectWait(ctx)
-			s.Dial(ctx)
-		}()
+	// If context is dead just return
+	if ctx.Err() != nil {
+		return
 	}
+	b.serversMutex.Lock()
+	defer b.serversMutex.Unlock()
+
+	// Try reconnect to the server if still configured
+	svr, ok := b.Servers.Load(svrName)
+	// Server is no longer configured, do nothing
+	if !ok {
+		return
+	}
+	s := svr.(client.IrcServerInterface)
+	// Error doesn't belong to current incarnation, do nothing
+	if ctx.Done() != s.Done() {
+		return
+	}
+	s.Close(ctx)
+	newSvr, newCtx := b.Config.NewIrcServer(
+		b.luaState.Context(),
+		svrName,
+		s.GetSettings())
+	newSvr.SetReconnectExp(*(s.GetReconnectExp()))
+	b.Servers.Store(svrName, newSvr)
+	newSvr.ReconnectWait(ctx)
+	newSvr.Dial(newCtx)
 }
 
 // ReloadLua deals with reloading Lua parts
@@ -322,7 +347,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 					InputCallback: b.HandleHandlers,
 				}
 				// Check if server already exists and/or if we need to (re)create it
-				if oldSvr, ok := b.servers.Load(serverNameStr); ok {
+				if oldSvr, ok := b.Servers.Load(serverNameStr); ok {
 					oldSettings := oldSvr.(client.IrcServerInterface).GetSettings()
 					if !(oldSettings.Host == serverSettings.Host &&
 						oldSettings.Port == serverSettings.Port &&
@@ -338,36 +363,39 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				if createServer {
 					log.Printf("Creating new IRC server: %s", serverNameStr)
 					// Create new IRC server
-					svr := b.Config.NewIrcServer(serverNameStr, &client.IrcServerSettings{
-						Host:          host,
-						Port:          portInt,
-						TLS:           tls,
-						Nick:          nick,
-						Realname:      realname,
-						Username:      username,
-						ErrorCallback: b.handleErrors,
-						InputCallback: b.HandleHandlers,
-						MaxReconnect:  float64(b.Config.MaxReconnect),
-					})
+					svr, svrCtx := b.Config.NewIrcServer(
+						ctx,
+						serverNameStr,
+						&client.IrcServerSettings{
+							Host:          host,
+							Port:          portInt,
+							TLS:           tls,
+							Nick:          nick,
+							Realname:      realname,
+							Username:      username,
+							ErrorCallback: b.handleErrors,
+							InputCallback: b.HandleHandlers,
+							MaxReconnect:  float64(b.Config.MaxReconnect),
+						})
 					// Set server to map
-					oldSvr, ok := b.servers.Load(serverNameStr)
+					oldSvr, ok := b.Servers.Load(serverNameStr)
 					if ok {
 						log.Printf("Destroying pre-existing IRC server: %s", serverNameStr)
 						oldSvr.(client.IrcServerInterface).Close(ctx)
 					}
-					b.servers.Store(serverNameStr, svr)
-					go svr.(client.IrcServerInterface).Dial(ctx)
+					b.Servers.Store(serverNameStr, svr)
+					go svr.(client.IrcServerInterface).Dial(svrCtx)
 				}
 			}
 		})
 	}
 
 	// Remove servers no longer defined in Lua
-	b.servers.Range(func(k, value interface{}) bool {
+	b.Servers.Range(func(k, value interface{}) bool {
 		if _, ok := luaServerNames[k.(string)]; !ok {
 			log.Printf("Destroying removed IRC server: %s", k)
 			go value.(client.IrcServerInterface).Close(ctx)
-			b.servers.Delete(k)
+			b.Servers.Delete(k)
 		}
 		return true
 	})
@@ -679,27 +707,30 @@ type BananaBoatBotConfig struct {
 	// Format String for OpenWeathermap URL
 	OwmURLTemplate string
 	// NewIrcServer creates a new irc server
-	NewIrcServer func(serverName string, settings *client.IrcServerSettings) interface{}
+	NewIrcServer func(parentCtx context.Context, serverName string, settings *client.IrcServerSettings) (client.IrcServerInterface, context.Context)
 }
 
 func (b *BananaBoatBot) newLuaState(ctx context.Context) *lua.LState {
 	// Create new Lua state
 	luaState := lua.NewState()
 	luaState.SetContext(ctx)
+
 	// Provide access to our library functions in Lua
 	luaState.PreloadModule("bananaboat", b.luaLibLoader)
+
 	return luaState
 }
 
 // NewBananaBoatBot creates a new BananaBoatBot
 func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaBoatBot {
-
+	// Set default URLs of webservices
 	if len(config.LuisURLTemplate) == 0 {
 		config.LuisURLTemplate = "https://%s.api.cognitive.microsoft.com/luis/v2.0/apps/%s?subscription-key=%s&verbose=false&q=%s"
 	}
 	if len(config.OwmURLTemplate) == 0 {
 		config.OwmURLTemplate = "https://api.openweathermap.org/data/2.5/weather?units=metric&APPID=%s&q=%s"
 	}
+
 	// We require a path to some script to load
 	if len(config.LuaFile) == 0 {
 		log.Fatal("Please specify script using -lua flag")
@@ -713,14 +744,17 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 		realname: "Banana Boat Bot",
 		username: "bananarama",
 	}
+
 	// Create new shared Lua state
 	b.luaState = b.newLuaState(ctx)
+
 	// Create new pool of Lua state
 	b.luaPool = sync.Pool{
 		New: func() interface{} {
 			return b.newLuaState(ctx)
 		},
 	}
+
 	// Create HTTP client
 	b.httpClient = http.Client{
 		Timeout: time.Second * 60,

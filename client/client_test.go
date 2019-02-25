@@ -75,15 +75,16 @@ func TestError(t *testing.T) {
 			done <- struct{}{}
 		},
 		InputCallback: func(ctx context.Context, svrName string, msg *irc.Message) {
+			// We will fake it by calling handleHandlers directly
 		},
 	}
 	// Create client
-	svrI := client.NewIrcServer("test", settings)
+	ctx := context.TODO()
+	svrI, svrCtx := client.NewIrcServer(ctx, "test", settings)
 	svr := svrI.(client.IrcServerInterface)
 
 	// Dial
-	ctx := context.TODO()
-	svr.Dial(ctx)
+	svr.Dial(svrCtx)
 	// Wait for error
 	select {
 	case err := <-errors:
@@ -91,6 +92,12 @@ func TestError(t *testing.T) {
 	case <-done:
 		break
 	}
+	// Send message
+	svr.GetMessages() <- irc.Message{
+		Command: "PRIVMSG",
+		Params:  []string{"hello"},
+	}
+
 	// Destroy server
 	svr.Close(ctx)
 }
@@ -100,8 +107,8 @@ func TestSendAndQuit(t *testing.T) {
 	l, serverPort := fakeServer(t)
 	defer l.Close()
 
-	ready := make(chan struct{})
-	done := make(chan struct{})
+	ready := make(chan struct{}, 1)
+	done := make(chan struct{}, 1)
 	errors := make(chan error, 2)
 
 	go func() {
@@ -115,6 +122,7 @@ func TestSendAndQuit(t *testing.T) {
 			msg, err := dec.Decode()
 			if err != nil {
 				errors <- err
+				return
 			}
 			if msg.Command == irc.USER {
 				ready <- struct{}{}
@@ -141,12 +149,12 @@ func TestSendAndQuit(t *testing.T) {
 	}
 
 	// Create client
-	svrI := client.NewIrcServer("test", settings)
+	ctx := context.TODO()
+	svrI, svrCtx := client.NewIrcServer(ctx, "test", settings)
 	svr := svrI.(client.IrcServerInterface)
 
 	// Dial
-	ctx := context.TODO()
-	svr.Dial(ctx)
+	svr.Dial(svrCtx)
 	// Wait for server to acknowledge USER
 	select {
 	case err := <-errors:
@@ -154,11 +162,6 @@ func TestSendAndQuit(t *testing.T) {
 	case <-ready:
 		break
 	}
-	// Send message
-	svr.SendMessage(ctx, &irc.Message{
-		Command: "PRIVMSG",
-		Params:  []string{"hello"},
-	})
 	// Destroy server
 	svr.Close(ctx)
 	// Wait for fake server to acknowledge QUIT

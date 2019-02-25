@@ -16,16 +16,21 @@ import (
 )
 
 type IrcServerInterface interface {
-	SendMessage(ctx context.Context, msg *irc.Message) bool
 	Dial(ctx context.Context)
 	Close(ctx context.Context)
 	GetSettings() *IrcServerSettings
+	GetMessages() chan irc.Message
+	GetReconnectExp() *uint64
+	SetReconnectExp(val uint64)
 	ReconnectWait(ctx context.Context)
+	Done() <-chan struct{}
 }
 
 // IrcServer contains everything related to a given IRC server
 type IrcServer struct {
 	Cancel       context.CancelFunc
+	done         <-chan struct{}
+	messages     chan irc.Message
 	addr         string
 	conn         net.Conn
 	decoder      *irc.Decoder
@@ -48,6 +53,26 @@ func (s *IrcServer) GetSettings() *IrcServerSettings {
 	return s.Settings
 }
 
+// GetMessages returns pointer to IrcServerSettings
+func (s *IrcServer) GetMessages() chan irc.Message {
+	return s.messages
+}
+
+// GetReconnectExp returns current reconnectExp
+func (s *IrcServer) GetReconnectExp() *uint64 {
+	return s.reconnectExp
+}
+
+// SetReconnectExp sets current reconnectExp
+func (s *IrcServer) SetReconnectExp(val uint64) {
+	s.reconnectExp = &val
+}
+
+// Done returns Done channel for the server
+func (s *IrcServer) Done() <-chan struct{} {
+	return s.done
+}
+
 // Close closes the connection to the server
 func (s *IrcServer) Close(ctx context.Context) {
 	// Send QUIT
@@ -65,39 +90,47 @@ func (s *IrcServer) Close(ctx context.Context) {
 	if s.conn != nil {
 		s.conn.Close()
 	}
+	// Cancel server context
+	s.Cancel()
 }
 
 // SendCommand tries to send a message to the server and returns true on success
-func (s *IrcServer) SendMessage(ctx context.Context, msg *irc.Message) bool {
-	if !s.limitOutput.Allow() {
-		log.Printf("Message ratelimited: %s", msg)
-		return false
+func (s *IrcServer) sendMessages(ctx context.Context) {
+	messagesToSend := s.GetMessages()
+	for {
+		msg, ok := <-messagesToSend
+		if !ok {
+			return
+		}
+		if !s.limitOutput.Allow() {
+			log.Printf("Message ratelimited: %s", msg)
+			return
+		}
+		// Require message to be sent in 30s
+		s.conn.SetWriteDeadline(time.Now().Add(time.Second * 30))
+		// Send message to socket
+		err := s.encoder.Encode(&msg)
+		// Handle error
+		if err != nil {
+			// Call error callback
+			go s.Settings.ErrorCallback(ctx, s.name, err)
+			return
+		}
 	}
-	// Require message to be sent in 30s
-	s.conn.SetWriteDeadline(time.Now().Add(time.Second * 30))
-	// Send message to socket
-	err := s.encoder.Encode(msg)
-	// Handle error
-	if err != nil {
-		// Close connection
-		s.conn.Close()
-		// Call error callback
-		go s.Settings.ErrorCallback(ctx, s.name, err)
-		return false
-	}
-	return true
 }
 
 // ReconnectWait waits / backs off
 func (s *IrcServer) ReconnectWait(ctx context.Context) {
 	atomic.AddUint64(s.reconnectExp, 1)
-	p := s.Settings.MaxReconnect * math.Tanh(float64(atomic.LoadUint64(s.reconnectExp)/1000))
+	p := s.Settings.MaxReconnect * math.Tanh(float64(*s.reconnectExp)/1000.0)
+	log.Printf("Sleeping for %.2fseconds before attempting reconnect", p)
 	<-time.After(time.Duration(p) * time.Second)
 }
 
 // Dial tries to connect to the server and start processing
 func (s *IrcServer) Dial(ctx context.Context) {
 
+	// Create dialer and dial
 	dialer := net.Dialer{Timeout: 30 * time.Second}
 	var err error
 	s.conn, err = dialer.DialContext(ctx, "tcp", s.addr)
@@ -122,8 +155,6 @@ func (s *IrcServer) Dial(ctx context.Context) {
 			msg, err := s.decoder.Decode()
 			// Handle error
 			if err != nil || msg.Command == irc.ERROR {
-				// Close connection
-				s.conn.Close()
 				// Set error if needed
 				if err != nil && msg != nil && msg.Command == irc.ERROR {
 					err = fmt.Errorf("[%s] server error: %s", s.name, strings.Join(msg.Params, ", "))
@@ -136,6 +167,8 @@ func (s *IrcServer) Dial(ctx context.Context) {
 			s.Settings.InputCallback(ctx, s.name, msg)
 		}
 	}()
+	// Write loop
+	go s.sendMessages(ctx)
 	var connectCommands []*irc.Message
 	index := 0
 	// Send password if configured
@@ -183,12 +216,16 @@ type IrcServerSettings struct {
 }
 
 // NewIrcServer creates an IRC server
-func NewIrcServer(name string, settings *IrcServerSettings) interface{} {
+func NewIrcServer(parentCtx context.Context, name string, settings *IrcServerSettings) (IrcServerInterface, context.Context) {
 	var reconnectExp uint64
+	ctx, cancel := context.WithCancel(parentCtx)
 	// Return new IrcServer
 	s := &IrcServer{
+		Cancel:       cancel,
+		done:         ctx.Done(),
 		limitOutput:  rate.NewLimiter(1, 10),
 		addr:         fmt.Sprintf("%s:%d", settings.Host, settings.Port),
+		messages:     make(chan irc.Message, 10),
 		name:         name,
 		reconnectExp: &reconnectExp,
 		Settings:     settings,
@@ -197,5 +234,5 @@ func NewIrcServer(name string, settings *IrcServerSettings) interface{} {
 			InsecureSkipVerify: true,
 		},
 	}
-	return s
+	return s, ctx
 }

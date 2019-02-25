@@ -14,27 +14,38 @@ import (
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
-var (
-	messages chan (irc.Message)
-)
-
 type mockIrcServer struct {
-	settings *client.IrcServerSettings
+	Cancel       context.CancelFunc
+	done         <-chan struct{}
+	messages     chan irc.Message
+	reconnectExp *uint64
+	settings     *client.IrcServerSettings
 }
 
-func init() {
-	messages = make(chan (irc.Message), 10)
-}
-
-func newMockIrcServer(name string, settings *client.IrcServerSettings) interface{} {
-	return &mockIrcServer{
+func newMockIrcServer(parentCtx context.Context, name string, settings *client.IrcServerSettings) (client.IrcServerInterface, context.Context) {
+	ctx, cancel := context.WithCancel(parentCtx)
+	messageOutput := make(chan irc.Message, 10)
+	m := &mockIrcServer{
+		Cancel:   cancel,
+		done:     ctx.Done(),
+		messages: messageOutput,
 		settings: settings,
 	}
+	return m, parentCtx
 }
 
-func (m *mockIrcServer) SendMessage(ctx context.Context, msg *irc.Message) bool {
-	messages <- *msg
-	return true
+// GetReconnectExp returns current reconnectExp
+func (m *mockIrcServer) GetReconnectExp() *uint64 {
+	return m.reconnectExp
+}
+
+// SetReconnectExp sets current reconnectExp
+func (m *mockIrcServer) SetReconnectExp(val uint64) {
+	m.reconnectExp = &val
+}
+
+func (m *mockIrcServer) Done() <-chan struct{} {
+	return m.done
 }
 
 func (m *mockIrcServer) Dial(parentCtx context.Context) {
@@ -43,8 +54,15 @@ func (m *mockIrcServer) Dial(parentCtx context.Context) {
 func (m *mockIrcServer) Close(parentCtx context.Context) {
 }
 
+func (m *mockIrcServer) ReconnectWait(parentCtx context.Context) {
+}
+
 func (m *mockIrcServer) GetSettings() *client.IrcServerSettings {
 	return m.settings
+}
+
+func (m *mockIrcServer) GetMessages() chan irc.Message {
+	return m.messages
 }
 
 func TestReload(t *testing.T) {
@@ -61,6 +79,9 @@ func TestReload(t *testing.T) {
 		Command: irc.PRIVMSG,
 		Params:  []string{"testbot1", "HELLO"},
 	})
+	// Read response
+	svrI, _ := b.Servers.Load("test")
+	messages := svrI.(client.IrcServerInterface).GetMessages()
 	msg := <-messages
 	if msg.Command != irc.PRIVMSG {
 		t.Fatalf("Got wrong message type in response1: %s", msg.Command)
@@ -122,6 +143,8 @@ func TestLuis(t *testing.T) {
 		Command: irc.PRIVMSG,
 		Params:  []string{"testbot1", "HELLO"},
 	})
+	svrI, _ := b.Servers.Load("test")
+	messages := svrI.(client.IrcServerInterface).GetMessages()
 	msg := <-messages
 	if msg.Command != irc.PRIVMSG {
 		t.Fatalf("Got wrong message type in response: %s", msg.Command)
@@ -165,6 +188,8 @@ func TestOwm(t *testing.T) {
 		Command: irc.PRIVMSG,
 		Params:  []string{"testbot1", "weather"},
 	})
+	svrI, _ := b.Servers.Load("test")
+	messages := svrI.(client.IrcServerInterface).GetMessages()
 	msg := <-messages
 	if msg.Command != irc.PRIVMSG {
 		t.Fatalf("Got wrong message type in response: %s", msg.Command)
@@ -192,6 +217,8 @@ func TestTitleScrape(t *testing.T) {
 		Command: irc.PRIVMSG,
 		Params:  []string{"testbot1", ts.URL},
 	})
+	svrI, _ := b.Servers.Load("test")
+	messages := svrI.(client.IrcServerInterface).GetMessages()
 	msg := <-messages
 	if msg.Command != irc.PRIVMSG {
 		t.Fatalf("Got wrong message type in response: %s", msg.Command)
