@@ -216,8 +216,10 @@ func (b *BananaBoatBot) handleErrors(ctx context.Context, svrName string, err er
 		s.GetSettings())
 	newSvr.SetReconnectExp(*(s.GetReconnectExp()))
 	b.Servers.Store(svrName, newSvr)
-	newSvr.ReconnectWait(ctx)
-	newSvr.Dial(newCtx)
+	go func() {
+		newSvr.ReconnectWait(ctx)
+		newSvr.Dial(newCtx)
+	}()
 }
 
 // ReloadLua deals with reloading Lua parts

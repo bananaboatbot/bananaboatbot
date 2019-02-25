@@ -94,9 +94,16 @@ func (s *IrcServer) Close(ctx context.Context) {
 func (s *IrcServer) sendMessages(ctx context.Context) {
 	messagesToSend := s.GetMessages()
 	for {
-		msg, ok := <-messagesToSend
-		if !ok {
+		var msg irc.Message
+		var ok bool
+		select {
+		case <-ctx.Done():
 			return
+		case msg, ok = <-messagesToSend:
+			if !ok {
+				return
+			}
+			break
 		}
 		if !s.limitOutput.Allow() {
 			log.Printf("Message ratelimited: %s", msg)
