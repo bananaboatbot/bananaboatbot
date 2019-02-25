@@ -188,38 +188,35 @@ func (b *BananaBoatBot) HandleHandlers(ctx context.Context, svrName string, msg 
 }
 
 // ReconnectServers reconnects servers on error
-func (b *BananaBoatBot) handleErrors(ctx context.Context, svrName string, err error) {
+func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err error) {
 	// Log the error
 	log.Printf("[%s] Connection error: %s", svrName, err)
-	// If context is dead just return
-	if ctx.Err() != nil {
-		return
-	}
+
 	b.serversMutex.Lock()
-	defer b.serversMutex.Unlock()
 
 	// Try reconnect to the server if still configured
 	svr, ok := b.Servers.Load(svrName)
 	// Server is no longer configured, do nothing
 	if !ok {
+		b.serversMutex.Unlock()
 		return
 	}
 	s := svr.(client.IrcServerInterface)
 	// Error doesn't belong to current incarnation, do nothing
 	if ctx.Done() != s.Done() {
+		b.serversMutex.Unlock()
 		return
 	}
 	s.Close(ctx)
-	newSvr, newCtx := b.Config.NewIrcServer(
+	newSvr, svrCtx := b.Config.NewIrcServer(
 		b.luaState.Context(),
 		svrName,
 		s.GetSettings())
 	newSvr.SetReconnectExp(*(s.GetReconnectExp()))
 	b.Servers.Store(svrName, newSvr)
-	go func() {
-		newSvr.ReconnectWait(ctx)
-		newSvr.Dial(newCtx)
-	}()
+	b.serversMutex.Unlock()
+	newSvr.ReconnectWait(svrCtx)
+	newSvr.Dial(svrCtx)
 }
 
 // ReloadLua deals with reloading Lua parts
@@ -314,7 +311,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				if port, ok := lv.(lua.LNumber); ok {
 					portInt = int(port)
 				} else {
-					portInt = 6667
+					portInt = b.Config.DefaultIrcPort
 				}
 				// Get 'nick' from table - use default if unavailable
 				var nick string
@@ -353,7 +350,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 					Nick:          nick,
 					Realname:      realname,
 					Username:      username,
-					ErrorCallback: b.handleErrors,
+					ErrorCallback: b.HandleErrors,
 					InputCallback: b.HandleHandlers,
 				}
 				// Check if server already exists and/or if we need to (re)create it
@@ -384,7 +381,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 							Nick:          nick,
 							Realname:      realname,
 							Username:      username,
-							ErrorCallback: b.handleErrors,
+							ErrorCallback: b.HandleErrors,
 							InputCallback: b.HandleHandlers,
 							MaxReconnect:  float64(b.Config.MaxReconnect),
 						})
@@ -707,6 +704,8 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 }
 
 type BananaBoatBotConfig struct {
+	// Default port for IRC
+	DefaultIrcPort int
 	// Path to script to be loaded
 	LuaFile string
 	// Shall we log each received command or not

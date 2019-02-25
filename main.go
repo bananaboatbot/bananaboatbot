@@ -14,6 +14,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+const (
+	defaultIrcPort = 6667
+)
+
 func main() {
 	// Set up and parse commandline flags
 	luaFile := flag.String("lua", "", "Path to Lua script")
@@ -33,10 +37,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := bot.NewBananaBoatBot(ctx,
 		&bot.BananaBoatBotConfig{
-			LogCommands:  *logCommands,
-			LuaFile:      *luaFile,
-			MaxReconnect: *maxReconnect,
-			NewIrcServer: client.NewIrcServer,
+			DefaultIrcPort: defaultIrcPort,
+			LogCommands:    *logCommands,
+			LuaFile:        *luaFile,
+			MaxReconnect:   *maxReconnect,
+			NewIrcServer:   client.NewIrcServer,
 		},
 	)
 	defer func() {

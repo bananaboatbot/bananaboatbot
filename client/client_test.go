@@ -2,38 +2,18 @@ package client_test
 
 import (
 	"context"
-	"net"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/fatalbanana/bananaboatbot/client"
+	"github.com/fatalbanana/bananaboatbot/test"
 	irc "gopkg.in/sorcix/irc.v2"
 )
-
-func fakeServer(t *testing.T) (net.Listener, int) {
-	// Start fake IRC server on ephermal port
-	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	index := strings.LastIndex(addr, ":")
-
-	// Set our server port to port used by the server
-	serverPort, err := strconv.Atoi(addr[index+1:])
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return l, serverPort
-}
 
 func TestError(t *testing.T) {
 
 	// Start fake IRC server on ephermal port
-	l, serverPort := fakeServer(t)
+	l, serverPort := test.FakeServer(t)
 	defer l.Close()
 
 	done := make(chan struct{}, 1)
@@ -53,6 +33,16 @@ func TestError(t *testing.T) {
 				errors <- err
 			}
 			if msg.Command == "USER" {
+				break
+			}
+		}
+		for {
+			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
+			msg, err := dec.Decode()
+			if err != nil {
+				errors <- err
+			}
+			if msg.Command == "PRIVMSG" {
 				break
 			}
 		}
@@ -85,6 +75,11 @@ func TestError(t *testing.T) {
 
 	// Dial
 	svr.Dial(svrCtx)
+	// Send message
+	svr.GetMessages() <- irc.Message{
+		Command: "PRIVMSG",
+		Params:  []string{"hello"},
+	}
 	// Wait for error
 	select {
 	case err := <-errors:
@@ -92,19 +87,13 @@ func TestError(t *testing.T) {
 	case <-done:
 		break
 	}
-	// Send message
-	svr.GetMessages() <- irc.Message{
-		Command: "PRIVMSG",
-		Params:  []string{"hello"},
-	}
-
 	// Destroy server
 	svr.Close(ctx)
 }
 
 func TestSendAndQuit(t *testing.T) {
 	// Start fake IRC server on ephermal port
-	l, serverPort := fakeServer(t)
+	l, serverPort := test.FakeServer(t)
 	defer l.Close()
 
 	ready := make(chan struct{}, 1)

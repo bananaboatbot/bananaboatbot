@@ -3,6 +3,7 @@ package bot_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,59 +12,9 @@ import (
 
 	"github.com/fatalbanana/bananaboatbot/bot"
 	"github.com/fatalbanana/bananaboatbot/client"
+	"github.com/fatalbanana/bananaboatbot/test"
 	irc "gopkg.in/sorcix/irc.v2"
 )
-
-type mockIrcServer struct {
-	Cancel       context.CancelFunc
-	done         <-chan struct{}
-	messages     chan irc.Message
-	reconnectExp *uint64
-	settings     *client.IrcServerSettings
-}
-
-func newMockIrcServer(parentCtx context.Context, name string, settings *client.IrcServerSettings) (client.IrcServerInterface, context.Context) {
-	ctx, cancel := context.WithCancel(parentCtx)
-	messageOutput := make(chan irc.Message, 10)
-	m := &mockIrcServer{
-		Cancel:   cancel,
-		done:     ctx.Done(),
-		messages: messageOutput,
-		settings: settings,
-	}
-	return m, parentCtx
-}
-
-// GetReconnectExp returns current reconnectExp
-func (m *mockIrcServer) GetReconnectExp() *uint64 {
-	return m.reconnectExp
-}
-
-// SetReconnectExp sets current reconnectExp
-func (m *mockIrcServer) SetReconnectExp(val uint64) {
-	m.reconnectExp = &val
-}
-
-func (m *mockIrcServer) Done() <-chan struct{} {
-	return m.done
-}
-
-func (m *mockIrcServer) Dial(parentCtx context.Context) {
-}
-
-func (m *mockIrcServer) Close(parentCtx context.Context) {
-}
-
-func (m *mockIrcServer) ReconnectWait(parentCtx context.Context) {
-}
-
-func (m *mockIrcServer) GetSettings() *client.IrcServerSettings {
-	return m.settings
-}
-
-func (m *mockIrcServer) GetMessages() chan irc.Message {
-	return m.messages
-}
 
 func TestReload(t *testing.T) {
 	ctx := context.TODO()
@@ -71,9 +22,10 @@ func TestReload(t *testing.T) {
 	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
 		LogCommands:  true,
 		LuaFile:      "../test/trivial1.lua",
-		MaxReconnect: 1,
-		NewIrcServer: newMockIrcServer,
+		MaxReconnect: 0,
+		NewIrcServer: test.NewMockIrcServer,
 	})
+	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
 		Command: irc.PRIVMSG,
@@ -135,9 +87,10 @@ func TestLuis(t *testing.T) {
 		LogCommands:     true,
 		LuaFile:         "../test/luis.lua",
 		LuisURLTemplate: fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL),
-		MaxReconnect:    1,
-		NewIrcServer:    newMockIrcServer,
+		MaxReconnect:    0,
+		NewIrcServer:    test.NewMockIrcServer,
 	})
+	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
 		Command: irc.PRIVMSG,
@@ -180,9 +133,10 @@ func TestOwm(t *testing.T) {
 		LogCommands:    true,
 		LuaFile:        "../test/owm.lua",
 		OwmURLTemplate: fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL),
-		MaxReconnect:   1,
-		NewIrcServer:   newMockIrcServer,
+		MaxReconnect:   0,
+		NewIrcServer:   test.NewMockIrcServer,
 	})
+	defer b.Close(ctx)
 	// Say weather
 	b.HandleHandlers(ctx, "test", &irc.Message{
 		Command: irc.PRIVMSG,
@@ -209,9 +163,10 @@ func TestTitleScrape(t *testing.T) {
 	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
 		LogCommands:  true,
 		LuaFile:      "../test/get_title.lua",
-		MaxReconnect: 1,
-		NewIrcServer: newMockIrcServer,
+		MaxReconnect: 0,
+		NewIrcServer: test.NewMockIrcServer,
 	})
+	defer b.Close(ctx)
 	// Say URL
 	b.HandleHandlers(ctx, "test", &irc.Message{
 		Command: irc.PRIVMSG,
@@ -226,4 +181,71 @@ func TestTitleScrape(t *testing.T) {
 	if msg.Params[1] != "asdf" {
 		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
 	}
+}
+
+func makeErrorHandler(b *bot.BananaBoatBot, done chan struct{}) func(context.Context, string, error) {
+	return func(ctx context.Context, svrName string, err error) {
+		b.HandleErrors(ctx, svrName, err)
+		done <- struct{}{}
+	}
+}
+
+// Test error handling
+func TestHandleServerError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	l, serverPort := test.FakeServer(t)
+
+	done := make(chan struct{}, 1)
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			conn.Close()
+			done <- struct{}{}
+		}
+	}()
+
+	// Create BananaBoatBot
+	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+		LogCommands:  true,
+		LuaFile:      "../test/trivial1.lua",
+		MaxReconnect: 0,
+		NewIrcServer: test.NewMockIrcServer,
+	})
+
+	// Naive approach to faking error won't work properly (but here for coverage)
+	b.HandleErrors(ctx, "test", errors.New("something went wrong"))
+
+	handleErrors := makeErrorHandler(b, done)
+
+	// Create settings for superfluous client
+	settings := &client.IrcServerSettings{
+		Host:          "localhost",
+		Port:          serverPort,
+		TLS:           false,
+		Nick:          "testbot1",
+		Realname:      "testbotr",
+		Username:      "testbotu",
+		Password:      "yodel",
+		ErrorCallback: handleErrors,
+		InputCallback: func(ctx context.Context, svrName string, msg *irc.Message) {
+			// Not relevant
+		},
+	}
+	// Create client
+	svrI, svrCtx := client.NewIrcServer(ctx, "test", settings)
+	// Replace existing client with our one
+	b.Servers.Store("test", svrI)
+	// Dial server
+	svrI.(client.IrcServerInterface).Dial(svrCtx)
+	// Wait for dropped connection
+	<-done
+	// Wait for error handling
+	<-done
 }

@@ -126,7 +126,7 @@ func (s *IrcServer) sendMessages(ctx context.Context) {
 func (s *IrcServer) ReconnectWait(ctx context.Context) {
 	atomic.AddUint64(s.reconnectExp, 1)
 	p := s.Settings.MaxReconnect * math.Tanh(float64(*s.reconnectExp)/1000.0)
-	log.Printf("Sleeping for %.2fseconds before attempting reconnect", p)
+	log.Printf("Sleeping for %.1f seconds before attempting reconnect", p)
 	<-time.After(time.Duration(p) * time.Second)
 }
 
@@ -158,7 +158,7 @@ func (s *IrcServer) Dial(ctx context.Context) {
 			// Handle error
 			if err != nil || msg.Command == irc.ERROR {
 				// Set error if needed
-				if err != nil && msg != nil && msg.Command == irc.ERROR {
+				if err == nil && msg != nil && msg.Command == irc.ERROR {
 					err = fmt.Errorf("[%s] server error: %s", s.name, strings.Join(msg.Params, ", "))
 				}
 				// Call error callback
