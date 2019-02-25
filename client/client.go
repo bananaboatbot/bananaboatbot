@@ -131,7 +131,6 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	var err error
 	s.conn, err = dialer.DialContext(ctx, "tcp", s.addr)
 	if s.Settings.TLS {
-		// users must set either ServerName or InsecureSkipVerify in the config.
 		s.conn = tls.Client(s.conn, s.tlsConfig)
 	}
 	// Handle Dial error
@@ -206,6 +205,7 @@ type IrcServerSettings struct {
 	Port          int
 	Realname      string
 	TLS           bool
+	VerifyTLS     bool
 	Username      string
 	ErrorCallback func(ctx context.Context, svrName string, err error)
 	InputCallback func(ctx context.Context, svrName string, msg *irc.Message)
@@ -215,6 +215,10 @@ type IrcServerSettings struct {
 func NewIrcServer(parentCtx context.Context, name string, settings *IrcServerSettings) (IrcServerInterface, context.Context) {
 	var reconnectExp uint64
 	ctx, cancel := context.WithCancel(parentCtx)
+	insecure := false
+	if !settings.VerifyTLS {
+		insecure = true
+	}
 	// Return new IrcServer
 	s := &IrcServer{
 		Cancel:       cancel,
@@ -225,9 +229,9 @@ func NewIrcServer(parentCtx context.Context, name string, settings *IrcServerSet
 		name:         name,
 		reconnectExp: &reconnectExp,
 		Settings:     settings,
-		// FIXME: should be configurable
 		tlsConfig: &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: insecure,
+			ServerName:         settings.Host,
 		},
 	}
 	return s, ctx

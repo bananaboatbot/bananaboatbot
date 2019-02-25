@@ -293,12 +293,19 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				// Get 'server' string from table
 				lv = serverSettings.RawGetString("server")
 				host := lua.LVAsString(lv)
-				// Get 'tls' bool from table
+				// Get 'tls' bool from table (default false)
 				var tls bool
 				lv = serverSettings.RawGetString("tls")
 				if lv, ok := lv.(lua.LBool); ok {
 					tls = bool(lv)
 				}
+				// Get 'tls_verify' bool from table (default true)
+				verifyTLS := true
+				lv = serverSettings.RawGetString("tls")
+				if lv, ok := lv.(lua.LBool); ok {
+					verifyTLS = bool(lv)
+				}
+
 				// Get 'port' from table
 				var portInt int
 				lv = serverSettings.RawGetString("port")
@@ -340,6 +347,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 					Host:          host,
 					Port:          portInt,
 					TLS:           tls,
+					VerifyTLS:     verifyTLS,
 					Nick:          nick,
 					Realname:      realname,
 					Username:      username,
@@ -352,6 +360,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 					if !(oldSettings.Host == serverSettings.Host &&
 						oldSettings.Port == serverSettings.Port &&
 						oldSettings.TLS == serverSettings.TLS &&
+						oldSettings.VerifyTLS == serverSettings.VerifyTLS &&
 						oldSettings.Nick == serverSettings.Nick &&
 						oldSettings.Realname == serverSettings.Realname &&
 						oldSettings.Username == serverSettings.Username) {
