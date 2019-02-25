@@ -86,10 +86,6 @@ func (s *IrcServer) Close(ctx context.Context) {
 			log.Printf("Failed to send QUIT: %s", err)
 		}
 	}
-	// Close connection
-	if s.conn != nil {
-		s.conn.Close()
-	}
 	// Cancel server context
 	s.Cancel()
 }
