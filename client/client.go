@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -19,6 +20,7 @@ type IrcServerInterface interface {
 	Dial(ctx context.Context)
 	Close(ctx context.Context)
 	GetSettings() *IrcServerSettings
+	ReconnectWait(ctx context.Context)
 }
 
 // IrcServer contains everything related to a given IRC server
@@ -30,7 +32,7 @@ type IrcServer struct {
 	encoder      *irc.Encoder
 	limitOutput  *rate.Limiter
 	name         string
-	reconnectExp float64
+	reconnectExp *uint64
 	Settings     *IrcServerSettings
 	tlsConfig    *tls.Config
 }
@@ -87,20 +89,15 @@ func (s *IrcServer) SendMessage(ctx context.Context, msg *irc.Message) bool {
 }
 
 // ReconnectWait waits / backs off
-func (s *IrcServer) reconnectWait(ctx context.Context) {
-	if s.reconnectExp == 0 {
-		s.reconnectExp = 0.001
-		return
-	}
-	p := s.Settings.MaxReconnect * math.Tanh(s.reconnectExp)
-	log.Printf("Sleeping for %.2f seconds before reconnecting to %s", p, s.name)
+func (s *IrcServer) ReconnectWait(ctx context.Context) {
+	atomic.AddUint64(s.reconnectExp, 1)
+	p := s.Settings.MaxReconnect * math.Tanh(float64(atomic.LoadUint64(s.reconnectExp)/1000))
 	<-time.After(time.Duration(p) * time.Second)
 }
 
 // Dial tries to connect to the server and start processing
 func (s *IrcServer) Dial(ctx context.Context) {
 
-	s.reconnectWait(ctx)
 	dialer := net.Dialer{Timeout: 30 * time.Second}
 	var err error
 	s.conn, err = dialer.DialContext(ctx, "tcp", s.addr)
@@ -110,13 +107,12 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	}
 	// Handle Dial error
 	if err != nil {
-		s.reconnectExp = s.reconnectExp * 2
 		go s.Settings.ErrorCallback(ctx, s.name, err)
 		return
 	}
+	atomic.StoreUint64(s.reconnectExp, 0)
 	s.encoder = irc.NewEncoder(s.conn)
 	s.decoder = irc.NewDecoder(s.conn)
-	s.reconnectExp = 0
 	// Read loop
 	go func() {
 		for {
@@ -188,12 +184,14 @@ type IrcServerSettings struct {
 
 // NewIrcServer creates an IRC server
 func NewIrcServer(name string, settings *IrcServerSettings) interface{} {
+	var reconnectExp uint64
 	// Return new IrcServer
 	s := &IrcServer{
-		limitOutput: rate.NewLimiter(1, 10),
-		addr:        fmt.Sprintf("%s:%d", settings.Host, settings.Port),
-		name:        name,
-		Settings:    settings,
+		limitOutput:  rate.NewLimiter(1, 10),
+		addr:         fmt.Sprintf("%s:%d", settings.Host, settings.Port),
+		name:         name,
+		reconnectExp: &reconnectExp,
+		Settings:     settings,
 		// FIXME: should be configurable
 		tlsConfig: &tls.Config{
 			InsecureSkipVerify: true,

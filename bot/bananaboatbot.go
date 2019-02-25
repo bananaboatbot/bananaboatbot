@@ -187,7 +187,11 @@ func (b *BananaBoatBot) handleErrors(ctx context.Context, svrName string, err er
 	// Try reconnect to the server if still configured
 	svr, ok := b.servers.Load(svrName)
 	if ok {
-		go svr.(client.IrcServerInterface).Dial(ctx)
+		go func() {
+			s := svr.(client.IrcServerInterface)
+			s.ReconnectWait(ctx)
+			s.Dial(ctx)
+		}()
 	}
 }
 
