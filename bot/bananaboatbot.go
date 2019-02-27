@@ -289,30 +289,32 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 		serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
 			// Get nested table
 			if serverSettings, ok := serverSettingsLV.(*lua.LTable); ok {
+
 				// Get 'server' string from table
 				lv = serverSettings.RawGetString("server")
 				host := lua.LVAsString(lv)
+
 				// Get 'tls' bool from table (default false)
 				var tls bool
 				lv = serverSettings.RawGetString("tls")
 				if lv, ok := lv.(lua.LBool); ok {
 					tls = bool(lv)
 				}
+
 				// Get 'tls_verify' bool from table (default true)
 				verifyTLS := true
-				lv = serverSettings.RawGetString("tls")
-				if lv, ok := lv.(lua.LBool); ok {
-					verifyTLS = bool(lv)
+				lv = serverSettings.RawGetString("tls_verify")
+				if lv == lua.LFalse {
+					verifyTLS = false
 				}
 
-				// Get 'port' from table
-				var portInt int
+				// Get 'port' from table (use default from so-called config)
+				portInt := b.Config.DefaultIrcPort
 				lv = serverSettings.RawGetString("port")
 				if port, ok := lv.(lua.LNumber); ok {
 					portInt = int(port)
-				} else {
-					portInt = b.Config.DefaultIrcPort
 				}
+
 				// Get 'nick' from table - use default if unavailable
 				var nick string
 				lv = serverSettings.RawGetString("nick")
@@ -321,6 +323,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				} else {
 					nick = b.nick
 				}
+
 				// Get 'realname' from table - use default if unavailable
 				var realname string
 				lv = serverSettings.RawGetString("realname")
@@ -329,6 +332,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				} else {
 					realname = b.realname
 				}
+
 				// Get 'username' from table - use default if unavailable
 				var username string
 				lv = serverSettings.RawGetString("username")
@@ -348,6 +352,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 					TLS:           tls,
 					VerifyTLS:     verifyTLS,
 					Nick:          nick,
+					MaxReconnect:  float64(b.Config.MaxReconnect),
 					Realname:      realname,
 					Username:      username,
 					ErrorCallback: b.HandleErrors,
@@ -371,20 +376,7 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				if createServer {
 					log.Printf("Creating new IRC server: %s", serverNameStr)
 					// Create new IRC server
-					svr, svrCtx := b.Config.NewIrcServer(
-						ctx,
-						serverNameStr,
-						&client.IrcServerSettings{
-							Host:          host,
-							Port:          portInt,
-							TLS:           tls,
-							Nick:          nick,
-							Realname:      realname,
-							Username:      username,
-							ErrorCallback: b.HandleErrors,
-							InputCallback: b.HandleHandlers,
-							MaxReconnect:  float64(b.Config.MaxReconnect),
-						})
+					svr, svrCtx := b.Config.NewIrcServer(ctx, serverNameStr, serverSettings)
 					// Set server to map
 					oldSvr, ok := b.Servers.Load(serverNameStr)
 					if ok {
