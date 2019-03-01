@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fatalbanana/bananaboatbot/bot"
 	"github.com/fatalbanana/bananaboatbot/client"
@@ -19,7 +20,7 @@ import (
 )
 
 var (
-	stdConfig = &bot.BananaBoatBotConfig{
+	stdConfig = bot.BananaBoatBotConfig{
 		LogCommands:  true,
 		LuaFile:      "../test/trivial1.lua",
 		MaxReconnect: 0,
@@ -38,7 +39,8 @@ func init() {
 func TestReload(t *testing.T) {
 	ctx := context.TODO()
 	// Create BananaBoatBot
-	b := bot.NewBananaBoatBot(ctx, stdConfig)
+	cloneCfg := stdConfig
+	b := bot.NewBananaBoatBot(ctx, &cloneCfg)
 	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -100,7 +102,7 @@ func TestLuis(t *testing.T) {
 	cfg := stdConfig
 	cfg.LuaFile = "../test/luis.lua"
 	cfg.LuisURLTemplate = fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL)
-	b := bot.NewBananaBoatBot(ctx, cfg)
+	b := bot.NewBananaBoatBot(ctx, &cfg)
 	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -144,7 +146,7 @@ func TestOwm(t *testing.T) {
 	cfg.LuaFile = "../test/owm.lua"
 	cfg.OwmURLTemplate = fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL)
 
-	b := bot.NewBananaBoatBot(ctx, cfg)
+	b := bot.NewBananaBoatBot(ctx, &cfg)
 	defer b.Close(ctx)
 	// Say weather
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -171,7 +173,7 @@ func TestTitleScrape(t *testing.T) {
 	ctx := context.TODO()
 	cfg := stdConfig
 	cfg.LuaFile = "../test/get_title.lua"
-	b := bot.NewBananaBoatBot(ctx, cfg)
+	b := bot.NewBananaBoatBot(ctx, &cfg)
 	defer b.Close(ctx)
 	// Say URL
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -202,6 +204,7 @@ func TestHandleServerError(t *testing.T) {
 	defer cancel()
 
 	l, serverPort := test.FakeServer(t)
+	defer l.Close()
 
 	done := make(chan struct{}, 1)
 
@@ -218,7 +221,7 @@ func TestHandleServerError(t *testing.T) {
 	}()
 
 	// Create BananaBoatBot
-	b := bot.NewBananaBoatBot(ctx, stdConfig)
+	b := bot.NewBananaBoatBot(ctx, &stdConfig)
 
 	// Naive approach to faking error won't work properly (but here for coverage)
 	b.HandleErrors(ctx, "test", errors.New("something went wrong"))
@@ -227,13 +230,15 @@ func TestHandleServerError(t *testing.T) {
 
 	// Create settings for superfluous client
 	settings := &client.IrcServerSettings{
-		Host:          "localhost",
-		Port:          serverPort,
-		TLS:           false,
-		Nick:          "testbot1",
-		Realname:      "testbotr",
-		Username:      "testbotu",
-		Password:      "yodel",
+		Basic: client.BasicIrcServerSettings{
+			Host:     "localhost",
+			Port:     serverPort,
+			TLS:      false,
+			Nick:     "testbot1",
+			Realname: "testbotr",
+			Username: "testbotu",
+			Password: "yodel",
+		},
 		ErrorCallback: handleErrors,
 		InputCallback: func(ctx context.Context, svrName string, msg *irc.Message) {
 			// Not relevant
@@ -249,4 +254,70 @@ func TestHandleServerError(t *testing.T) {
 	<-done
 	// Wait for error handling
 	<-done
+}
+
+func TestForUnwantedDisconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errors := make(chan error, 1)
+	done := make(chan struct{}, 1)
+
+	l, serverPort := test.FakeServer(t)
+	defer l.Close()
+
+	// Create BananaBoatBot
+	cfg := stdConfig
+	cfg.DefaultIrcPort = serverPort
+	cfg.NewIrcServer = client.NewIrcServer
+	b := bot.NewBananaBoatBot(ctx, &cfg)
+	defer b.Close(ctx)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			errors <- err
+		}
+		enc := irc.NewEncoder(conn)
+		dec := irc.NewDecoder(conn)
+		count := 3
+		test.WaitForRegistration(ctx, conn, dec, errors)
+		for {
+			conn.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
+			err := enc.Encode(&irc.Message{
+				Command: irc.PRIVMSG,
+				Params:  []string{"testbot1", "HELLO"},
+			})
+			if err != nil {
+				errors <- err
+			}
+			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
+			msg, err := dec.Decode()
+			if err != nil {
+				errors <- err
+				return
+			}
+			if len(msg.Params) != 2 {
+				errors <- fmt.Errorf("Unexpected number of parameters: %d (%s)", len(msg.Params), msg)
+				return
+			}
+			if msg.Params[1] != "HELLO" {
+				errors <- fmt.Errorf("%s != HELLO", msg.Params[1])
+				return
+			}
+			count--
+			if count == 0 {
+				done <- struct{}{}
+				return
+			}
+			b.ReloadLua(ctx)
+		}
+	}()
+
+	select {
+	case <-done:
+		break
+	case err := <-errors:
+		t.Fatal(err)
+	}
 }

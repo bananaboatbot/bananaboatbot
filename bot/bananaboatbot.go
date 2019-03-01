@@ -50,7 +50,7 @@ type BananaBoatBot struct {
 	// servers is a map of friendly names to IRC servers
 	Servers sync.Map
 	// mutex for handling of servers
-	serversMutex sync.Mutex
+	serverReconnectMutex sync.Mutex
 }
 
 // Close handles shutdown-related tasks
@@ -187,24 +187,24 @@ func (b *BananaBoatBot) HandleHandlers(ctx context.Context, svrName string, msg 
 	}
 }
 
-// ReconnectServers reconnects servers on error
+// HandleErrors reconnects servers on error
 func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err error) {
 	// Log the error
 	log.Printf("[%s] Connection error: %s", svrName, err)
 
-	b.serversMutex.Lock()
+	b.serverReconnectMutex.Lock()
 
 	// Try reconnect to the server if still configured
 	svr, ok := b.Servers.Load(svrName)
 	// Server is no longer configured, do nothing
 	if !ok {
-		b.serversMutex.Unlock()
+		b.serverReconnectMutex.Unlock()
 		return
 	}
 	s := svr.(client.IrcServerInterface)
 	// Error doesn't belong to current incarnation, do nothing
 	if ctx.Done() != s.Done() {
-		b.serversMutex.Unlock()
+		b.serverReconnectMutex.Unlock()
 		return
 	}
 	s.Close(ctx)
@@ -214,31 +214,14 @@ func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err er
 		s.GetSettings())
 	newSvr.SetReconnectExp(*(s.GetReconnectExp()))
 	b.Servers.Store(svrName, newSvr)
-	b.serversMutex.Unlock()
+	b.serverReconnectMutex.Unlock()
 	newSvr.ReconnectWait(svrCtx)
 	newSvr.Dial(svrCtx)
 }
 
-// ReloadLua deals with reloading Lua parts
-func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
-	b.luaMutex.Lock()
-	defer func() {
-		// Clear stack and release Lua mutex
-		b.luaState.SetTop(0)
-		b.luaMutex.Unlock()
-	}()
-
-	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
-		return err
-	}
-
-	lv := b.luaState.Get(-1)
-	if lv.Type() != lua.LTTable {
-		return fmt.Errorf("lua reload error: unexpected return type: %s", lv.Type())
-	}
-	tbl := lv.(*lua.LTable)
-
-	lv = tbl.RawGetString("nick")
+// Set default values from table returned by Lua
+func (b *BananaBoatBot) setDefaultsFromLua(ctx context.Context, tbl *lua.LTable) {
+	lv := tbl.RawGetString("nick")
 	nick := lua.LVAsString(lv)
 	if len(nick) > 0 {
 		b.nick = nick
@@ -255,12 +238,15 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	if len(username) > 0 {
 		b.username = username
 	}
+}
 
-	lv = tbl.RawGetString("handlers")
-	defer b.handlersMutex.Unlock()
-	b.handlersMutex.Lock()
+// Set and mtaintain handler functions based on table returned by Lua
+func (b *BananaBoatBot) setHandlersFromLua(ctx context.Context, tbl *lua.LTable) {
 	luaCommands := make(map[string]struct{})
+	lv := tbl.RawGetString("handlers")
 	if handlerTbl, ok := lv.(*lua.LTable); ok {
+		b.handlersMutex.Lock()
+		defer b.handlersMutex.Unlock()
 		handlerTbl.ForEach(func(commandName lua.LValue, handlerFuncL lua.LValue) {
 			if handlerFunc, ok := handlerFuncL.(*lua.LFunction); ok {
 				commandNameStr := lua.LVAsString(commandName)
@@ -268,127 +254,134 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 				luaCommands[commandNameStr] = struct{}{}
 			}
 		})
-	} else {
-		return fmt.Errorf("lua reload error: unexpected handlers type: %s", lv.Type())
-	}
-
-	// Delete handlers still in map but no longer defined in Lua
-	for k := range b.handlers {
-		if _, ok := luaCommands[k]; !ok {
-			delete(b.handlers, k)
+		// Delete handlers still in map but no longer defined in Lua
+		for k := range b.handlers {
+			if _, ok := luaCommands[k]; !ok {
+				delete(b.handlers, k)
+			}
 		}
+	} else {
+		log.Printf("lua reload error: unexpected handlers type: %s", lv.Type())
 	}
+}
 
+// (Re)create servers if deemed necessary
+func (b *BananaBoatBot) maybeCreateServer(ctx context.Context, serverNameStr string, serverSettings *client.IrcServerSettings) {
+	var createServer bool
+	// Check if server already exists and/or if we need to (re)create it
+	if oldSvr, ok := b.Servers.Load(serverNameStr); ok {
+		oldSettings := oldSvr.(client.IrcServerInterface).GetSettings()
+		createServer = (oldSettings.Basic != serverSettings.Basic)
+	} else {
+		createServer = true
+	}
+	if !createServer {
+		return
+	}
+	log.Printf("Creating new IRC server: %s", serverNameStr)
+	// Create new IRC server
+	svr, svrCtx := b.Config.NewIrcServer(ctx, serverNameStr, serverSettings)
+	// Set server to map
+	oldSvr, ok := b.Servers.Load(serverNameStr)
+	if ok {
+		log.Printf("Destroying pre-existing IRC server: %s", serverNameStr)
+		oldSvr.(client.IrcServerInterface).Close(ctx)
+	}
+	b.Servers.Store(serverNameStr, svr)
+	go svr.(client.IrcServerInterface).Dial(svrCtx)
+}
+
+// Set and maintain servers based on table returned by Lua
+func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) {
 	// Make map of server names collected from Lua
 	luaServerNames := make(map[string]struct{})
 	// Get 'servers' from table
-	lv = tbl.RawGetString("servers")
+	lv := tbl.RawGetString("servers")
 	// Get table value
-	if serverTbl, ok := lv.(*lua.LTable); ok {
-		// Iterate over nested tables...
-		serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
-			// Get nested table
-			if serverSettings, ok := serverSettingsLV.(*lua.LTable); ok {
-
-				// Get 'server' string from table
-				lv = serverSettings.RawGetString("server")
-				host := lua.LVAsString(lv)
-
-				// Get 'tls' bool from table (default false)
-				var tls bool
-				lv = serverSettings.RawGetString("tls")
-				if lv, ok := lv.(lua.LBool); ok {
-					tls = bool(lv)
-				}
-
-				// Get 'tls_verify' bool from table (default true)
-				verifyTLS := true
-				lv = serverSettings.RawGetString("tls_verify")
-				if lv == lua.LFalse {
-					verifyTLS = false
-				}
-
-				// Get 'port' from table (use default from so-called config)
-				portInt := b.Config.DefaultIrcPort
-				lv = serverSettings.RawGetString("port")
-				if port, ok := lv.(lua.LNumber); ok {
-					portInt = int(port)
-				}
-
-				// Get 'nick' from table - use default if unavailable
-				var nick string
-				lv = serverSettings.RawGetString("nick")
-				if lv, ok := lv.(lua.LString); ok {
-					nick = lua.LVAsString(lv)
-				} else {
-					nick = b.nick
-				}
-
-				// Get 'realname' from table - use default if unavailable
-				var realname string
-				lv = serverSettings.RawGetString("realname")
-				if lv, ok := lv.(lua.LString); ok {
-					realname = lua.LVAsString(lv)
-				} else {
-					realname = b.realname
-				}
-
-				// Get 'username' from table - use default if unavailable
-				var username string
-				lv = serverSettings.RawGetString("username")
-				if lv, ok := lv.(lua.LString); ok {
-					username = lua.LVAsString(lv)
-				} else {
-					username = b.username
-				}
-
-				// Remember we found this key
-				serverNameStr := lua.LVAsString(serverName)
-				luaServerNames[serverNameStr] = struct{}{}
-				createServer := false
-				serverSettings := &client.IrcServerSettings{
-					Host:          host,
-					Port:          portInt,
-					TLS:           tls,
-					VerifyTLS:     verifyTLS,
-					Nick:          nick,
-					MaxReconnect:  float64(b.Config.MaxReconnect),
-					Realname:      realname,
-					Username:      username,
-					ErrorCallback: b.HandleErrors,
-					InputCallback: b.HandleHandlers,
-				}
-				// Check if server already exists and/or if we need to (re)create it
-				if oldSvr, ok := b.Servers.Load(serverNameStr); ok {
-					oldSettings := oldSvr.(client.IrcServerInterface).GetSettings()
-					if !(oldSettings.Host == serverSettings.Host &&
-						oldSettings.Port == serverSettings.Port &&
-						oldSettings.TLS == serverSettings.TLS &&
-						oldSettings.VerifyTLS == serverSettings.VerifyTLS &&
-						oldSettings.Nick == serverSettings.Nick &&
-						oldSettings.Realname == serverSettings.Realname &&
-						oldSettings.Username == serverSettings.Username) {
-						createServer = true
-					}
-				} else {
-					createServer = true
-				}
-				if createServer {
-					log.Printf("Creating new IRC server: %s", serverNameStr)
-					// Create new IRC server
-					svr, svrCtx := b.Config.NewIrcServer(ctx, serverNameStr, serverSettings)
-					// Set server to map
-					oldSvr, ok := b.Servers.Load(serverNameStr)
-					if ok {
-						log.Printf("Destroying pre-existing IRC server: %s", serverNameStr)
-						oldSvr.(client.IrcServerInterface).Close(ctx)
-					}
-					b.Servers.Store(serverNameStr, svr)
-					go svr.(client.IrcServerInterface).Dial(svrCtx)
-				}
-			}
-		})
+	serverTbl, ok := lv.(*lua.LTable)
+	if !ok {
+		log.Printf("lua reload error: unexpected servers type: %s", lv.Type())
+		return
 	}
+	// Iterate over nested tables...
+	serverTbl.ForEach(func(serverName lua.LValue, serverSettingsLV lua.LValue) {
+
+		// Get nested table
+		serverSettings, ok := serverSettingsLV.(*lua.LTable)
+		if !ok {
+			log.Printf("found unexpected type inside servers: %s", lv.Type())
+			return
+		}
+
+		// Defaults
+		nick := b.nick
+		portInt := b.Config.DefaultIrcPort
+		realname := b.realname
+		tls := false
+		username := b.username
+		verifyTLS := true
+
+		// Get 'server' string from table
+		lv = serverSettings.RawGetString("server")
+		host := lua.LVAsString(lv)
+
+		// Get 'tls' bool from table (default false)
+		lv = serverSettings.RawGetString("tls")
+		if lv, ok := lv.(lua.LBool); ok {
+			tls = bool(lv)
+		}
+
+		// Get 'tls_verify' bool from table (default true)
+		lv = serverSettings.RawGetString("tls_verify")
+		if lv == lua.LFalse {
+			verifyTLS = false
+		}
+
+		// Get 'port' from table (use default from so-called config)
+		lv = serverSettings.RawGetString("port")
+		if port, ok := lv.(lua.LNumber); ok {
+			portInt = int(port)
+		}
+
+		// Get 'nick' from table - use default if unavailable
+		lv = serverSettings.RawGetString("nick")
+		if ls, ok := lv.(lua.LString); ok {
+			nick = lua.LVAsString(ls)
+		}
+
+		// Get 'realname' from table - use default if unavailable
+		lv = serverSettings.RawGetString("realname")
+		if ls, ok := lv.(lua.LString); ok {
+			lua.LVAsString(ls)
+		}
+
+		// Get 'username' from table - use default if unavailable
+		lv = serverSettings.RawGetString("username")
+		if ls, ok := lv.(lua.LString); ok {
+			username = lua.LVAsString(ls)
+		}
+
+		// Remember we found this key so we can delete unused servers later
+		serverNameStr := lua.LVAsString(serverName)
+		luaServerNames[serverNameStr] = struct{}{}
+		ircServerSettings := &client.IrcServerSettings{
+			Basic: client.BasicIrcServerSettings{
+				Host:      host,
+				Port:      portInt,
+				TLS:       tls,
+				VerifyTLS: verifyTLS,
+				Nick:      nick,
+				Realname:  realname,
+				Username:  username,
+			},
+			MaxReconnect:  float64(b.Config.MaxReconnect),
+			ErrorCallback: b.HandleErrors,
+			InputCallback: b.HandleHandlers,
+		}
+
+		// (Re)create the server if necessary
+		b.maybeCreateServer(ctx, serverName.String(), ircServerSettings)
+	})
 
 	// Remove servers no longer defined in Lua
 	b.Servers.Range(func(k, value interface{}) bool {
@@ -399,19 +392,51 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 		}
 		return true
 	})
+}
+
+// ReloadLua deals with reloading Lua parts
+func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
+	b.luaMutex.Lock()
+	defer func() {
+		// Clear stack and release Lua mutex
+		b.luaState.SetTop(0)
+		b.luaMutex.Unlock()
+	}()
+
+	if err := b.luaState.DoFile(b.Config.LuaFile); err != nil {
+		return err
+	}
+
+	lv := b.luaState.Get(-1)
+	tbl, ok := lv.(*lua.LTable)
+	if !ok {
+		return fmt.Errorf("lua reload error: unexpected return type: %s", lv.Type())
+	}
+
+	// Get and set default values like 'nick'
+	b.setDefaultsFromLua(ctx, tbl)
+
+	// Deal with 'handlers'
+	b.setHandlersFromLua(ctx, tbl)
+
+	// Deal with 'servers'
+	b.setServersFromLua(ctx, tbl)
 
 	return nil
 }
 
+// OWMResponse represents the main OpenWeatherMap JSON response
 type OWMResponse struct {
 	Conditions []OWMCondition `json:"weather"`
 	Main       OWMMain        `json:"main"`
 }
 
+// OWMCondition represents some description of a weather condition
 type OWMCondition struct {
 	Description string `json:"description"`
 }
 
+// OWMMain contains 'main' OWM result (we're only interested in temperature)
 type OWMMain struct {
 	Temperature float64 `json:"temp"`
 }
@@ -458,16 +483,19 @@ func (b *BananaBoatBot) luaLibOpenWeatherMap(luaState *lua.LState) int {
 	return 1
 }
 
+// LuisResponse represents a Luis.ai prediction result
 type LuisResponse struct {
 	TopScoringIntent LuisTopScoringIntent `json:"topScoringIntent"`
 	Entities         []LuisEntity         `json:"entities"`
 }
 
+// LuisTopScoringIntent represents the top scoring intent & its score
 type LuisTopScoringIntent struct {
 	Intent string  `json:"intent"`
 	Score  float64 `json:"score"`
 }
 
+// LuisEntity represents a specific entity, it's type & score
 type LuisEntity struct {
 	Entity string  `json:"entity"`
 	Type   string  `json:"type"`
@@ -695,6 +723,7 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	return 1
 }
 
+// BananaBoatBotConfig contains the primary configuration for the app
 type BananaBoatBotConfig struct {
 	// Default port for IRC
 	DefaultIrcPort int

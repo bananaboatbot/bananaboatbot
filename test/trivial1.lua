@@ -10,7 +10,6 @@ bot.handlers = {
 bot.servers = {
   test = {
     server = 'localhost',
-    tls = false,
   },
 }
 bot.nick = botnick

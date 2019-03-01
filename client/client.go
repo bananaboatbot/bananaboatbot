@@ -15,6 +15,7 @@ import (
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
+// IrcServerInterface is the interface implemented by IrcServer
 type IrcServerInterface interface {
 	Dial(ctx context.Context)
 	Close(ctx context.Context)
@@ -96,14 +97,14 @@ func (s *IrcServer) sendMessages(ctx context.Context) {
 	for {
 		var msg irc.Message
 		var ok bool
+		done := ctx.Done()
 		select {
-		case <-ctx.Done():
+		case <-done:
 			return
 		case msg, ok = <-messagesToSend:
 			if !ok {
 				return
 			}
-			break
 		}
 		if !s.limitOutput.Allow() {
 			log.Printf("Message ratelimited: %s", msg)
@@ -137,7 +138,7 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	dialer := net.Dialer{Timeout: 30 * time.Second}
 	var err error
 	s.conn, err = dialer.DialContext(ctx, "tcp", s.addr)
-	if s.Settings.TLS {
+	if s.Settings.Basic.TLS {
 		s.conn = tls.Client(s.conn, s.tlsConfig)
 	}
 	// Handle Dial error
@@ -174,11 +175,11 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	var connectCommands []*irc.Message
 	index := 0
 	// Send password if configured
-	if len(s.Settings.Password) > 0 {
+	if len(s.Settings.Basic.Password) > 0 {
 		connectCommands = make([]*irc.Message, 3)
 		connectCommands[0] = &irc.Message{
 			Command: irc.PASS,
-			Params:  []string{s.Settings.Password},
+			Params:  []string{s.Settings.Basic.Password},
 		}
 		index = 1
 	} else {
@@ -186,12 +187,12 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	}
 	connectCommands[index] = &irc.Message{
 		Command: irc.NICK,
-		Params:  []string{s.Settings.Nick},
+		Params:  []string{s.Settings.Basic.Nick},
 	}
-	index += 1
+	index++
 	connectCommands[index] = &irc.Message{
 		Command: irc.USER,
-		Params:  []string{s.Settings.Username, "0", "*", s.Settings.Realname},
+		Params:  []string{s.Settings.Basic.Username, "0", "*", s.Settings.Basic.Realname},
 	}
 	for _, cmd := range connectCommands {
 		err := s.encoder.Encode(cmd)
@@ -205,17 +206,22 @@ func (s *IrcServer) Dial(ctx context.Context) {
 
 // IrcServerSettings contains all configuration for an IRC server
 type IrcServerSettings struct {
-	Host          string
-	Nick          string
-	MaxReconnect  float64
-	Password      string
-	Port          int
-	Realname      string
-	TLS           bool
-	VerifyTLS     bool
-	Username      string
+	Basic         BasicIrcServerSettings
 	ErrorCallback func(ctx context.Context, svrName string, err error)
 	InputCallback func(ctx context.Context, svrName string, msg *irc.Message)
+	MaxReconnect  float64
+}
+
+// BasicIrcServerSettings contains the 'essential' IRC server configuration
+type BasicIrcServerSettings struct {
+	Host      string
+	Nick      string
+	Password  string
+	Port      int
+	Realname  string
+	TLS       bool
+	Username  string
+	VerifyTLS bool
 }
 
 // NewIrcServer creates an IRC server
@@ -223,7 +229,7 @@ func NewIrcServer(parentCtx context.Context, name string, settings *IrcServerSet
 	var reconnectExp uint64
 	ctx, cancel := context.WithCancel(parentCtx)
 	insecure := false
-	if !settings.VerifyTLS {
+	if !settings.Basic.VerifyTLS {
 		insecure = true
 	}
 	// Return new IrcServer
@@ -231,14 +237,14 @@ func NewIrcServer(parentCtx context.Context, name string, settings *IrcServerSet
 		Cancel:       cancel,
 		done:         ctx.Done(),
 		limitOutput:  rate.NewLimiter(1, 10),
-		addr:         fmt.Sprintf("%s:%d", settings.Host, settings.Port),
+		addr:         fmt.Sprintf("%s:%d", settings.Basic.Host, settings.Basic.Port),
 		messages:     make(chan irc.Message, 10),
 		name:         name,
 		reconnectExp: &reconnectExp,
 		Settings:     settings,
 		tlsConfig: &tls.Config{
 			InsecureSkipVerify: insecure,
-			ServerName:         settings.Host,
+			ServerName:         settings.Basic.Host,
 		},
 	}
 	return s, ctx

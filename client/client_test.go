@@ -12,6 +12,9 @@ import (
 
 func TestError(t *testing.T) {
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Start fake IRC server on ephermal port
 	l, serverPort := test.FakeServer(t)
 	defer l.Close()
@@ -26,41 +29,27 @@ func TestError(t *testing.T) {
 		}
 		dec := irc.NewDecoder(conn)
 		enc := irc.NewEncoder(conn)
-		for {
-			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
-			msg, err := dec.Decode()
-			if err != nil {
-				errors <- err
-			}
-			if msg.Command == "USER" {
-				break
-			}
-		}
-		for {
-			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
-			msg, err := dec.Decode()
-			if err != nil {
-				errors <- err
-			}
-			if msg.Command == "PRIVMSG" {
-				break
-			}
-		}
+		test.WaitForRegistration(ctx, conn, dec, errors)
+		conn.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
 		enc.Encode(&irc.Message{
 			Command: irc.ERROR,
 			Params:  []string{"Bye"},
 		})
+		done <- struct{}{}
+		<-ctx.Done()
 	}()
 
 	// Create server settings
 	settings := &client.IrcServerSettings{
-		Host:     "localhost",
-		Port:     serverPort,
-		TLS:      false,
-		Nick:     "testbot1",
-		Realname: "testbotr",
-		Username: "testbotu",
-		Password: "yodel",
+		Basic: client.BasicIrcServerSettings{
+			Host:     "localhost",
+			Port:     serverPort,
+			TLS:      false,
+			Nick:     "testbot1",
+			Realname: "testbotr",
+			Username: "testbotu",
+			Password: "yodel",
+		},
 		ErrorCallback: func(ctx context.Context, svrName string, err error) {
 			done <- struct{}{}
 		},
@@ -69,7 +58,6 @@ func TestError(t *testing.T) {
 		},
 	}
 	// Create client
-	ctx := context.TODO()
 	svrI, svrCtx := client.NewIrcServer(ctx, "test", settings)
 	svr := svrI.(client.IrcServerInterface)
 
@@ -92,6 +80,10 @@ func TestError(t *testing.T) {
 }
 
 func TestSendAndQuit(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Start fake IRC server on ephermal port
 	l, serverPort := test.FakeServer(t)
 	defer l.Close()
@@ -120,25 +112,27 @@ func TestSendAndQuit(t *testing.T) {
 				break
 			}
 		}
-		select {}
+		<-ctx.Done()
 	}()
 
 	// Create server settings
 	settings := &client.IrcServerSettings{
-		Host:     "localhost",
-		Port:     serverPort,
-		TLS:      false,
-		Nick:     "testbot1",
-		Realname: "testbotr",
-		Username: "testbotu",
+		Basic: client.BasicIrcServerSettings{
+			Host:     "localhost",
+			Port:     serverPort,
+			TLS:      false,
+			Nick:     "testbot1",
+			Realname: "testbotr",
+			Username: "testbotu",
+		},
 		ErrorCallback: func(ctx context.Context, svrName string, err error) {
+			errors <- err
 		},
 		InputCallback: func(ctx context.Context, svrName string, msg *irc.Message) {
 		},
 	}
 
 	// Create client
-	ctx := context.TODO()
 	svrI, svrCtx := client.NewIrcServer(ctx, "test", settings)
 	svr := svrI.(client.IrcServerInterface)
 
@@ -152,7 +146,7 @@ func TestSendAndQuit(t *testing.T) {
 		break
 	}
 	// Destroy server
-	svr.Close(ctx)
+	svr.Close(svrCtx)
 	// Wait for fake server to acknowledge QUIT
 	select {
 	case err := <-errors:
