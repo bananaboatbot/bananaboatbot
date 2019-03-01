@@ -23,6 +23,7 @@ func main() {
 	luaFile := flag.String("lua", "", "Path to Lua script")
 	logCommands := flag.Bool("log-commands", false, "Log commands received from servers")
 	maxReconnect := flag.Int("max-reconnect", 3600, "Maximum reconnect interval in seconds")
+	packageDir := flag.String("package-path", "", "Path to add to Lua package.path")
 	ringSize := flag.Int("ring-size", 100, "Number of entries in log ringbuffer")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
@@ -40,6 +41,7 @@ func main() {
 			DefaultIrcPort: defaultIrcPort,
 			LogCommands:    *logCommands,
 			LuaFile:        *luaFile,
+			PackageDir:     *packageDir,
 			MaxReconnect:   *maxReconnect,
 			NewIrcServer:   client.NewIrcServer,
 		},

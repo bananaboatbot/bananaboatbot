@@ -706,19 +706,34 @@ type BananaBoatBotConfig struct {
 	LuisURLTemplate string
 	// Maximum reconnect interval in seconds
 	MaxReconnect int
-	// Format String for OpenWeathermap URL
-	OwmURLTemplate string
 	// NewIrcServer creates a new irc server
 	NewIrcServer func(parentCtx context.Context, serverName string, settings *client.IrcServerSettings) (client.IrcServerInterface, context.Context)
+	// Format String for OpenWeathermap URL
+	OwmURLTemplate string
+	// PackageDir is a directory to add to Lua package.path
+	PackageDir string
 }
 
-func (b *BananaBoatBot) newLuaState(ctx context.Context) *lua.LState {
+func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua.LState {
 	// Create new Lua state
 	luaState := lua.NewState()
 	luaState.SetContext(ctx)
 
 	// Provide access to our library functions in Lua
 	luaState.PreloadModule("bananaboat", b.luaLibLoader)
+
+	// Tamper package.path according to configuration
+	if len(packageDir) > 0 {
+		// Get "package" global
+		t := luaState.GetGlobal("package").(*lua.LTable)
+		// Get "path" from package table
+		lPath := lua.LString("path")
+		s := luaState.RawGet(t, lPath).(lua.LString).String()
+		// Set new package.path
+		luaState.RawSet(t, lPath, lua.LString(strings.Join([]string{s, packageDir}, ";")))
+		// Clear stack
+		luaState.SetTop(0)
+	}
 
 	return luaState
 }
@@ -748,12 +763,12 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 	}
 
 	// Create new shared Lua state
-	b.luaState = b.newLuaState(ctx)
+	b.luaState = b.newLuaState(ctx, config.PackageDir)
 
 	// Create new pool of Lua state
 	b.luaPool = sync.Pool{
 		New: func() interface{} {
-			return b.newLuaState(ctx)
+			return b.newLuaState(ctx, config.PackageDir)
 		},
 	}
 

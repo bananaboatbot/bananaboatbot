@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,15 +18,27 @@ import (
 	irc "gopkg.in/sorcix/irc.v2"
 )
 
-func TestReload(t *testing.T) {
-	ctx := context.TODO()
-	// Create BananaBoatBot
-	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
+var (
+	stdConfig = &bot.BananaBoatBotConfig{
 		LogCommands:  true,
 		LuaFile:      "../test/trivial1.lua",
 		MaxReconnect: 0,
 		NewIrcServer: test.NewMockIrcServer,
-	})
+	}
+)
+
+func init() {
+	pDir, err := filepath.Abs("../test")
+	if err != nil {
+		panic(err)
+	}
+	stdConfig.PackageDir = fmt.Sprintf("%s%c?.lua", pDir, os.PathSeparator)
+}
+
+func TestReload(t *testing.T) {
+	ctx := context.TODO()
+	// Create BananaBoatBot
+	b := bot.NewBananaBoatBot(ctx, stdConfig)
 	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -64,7 +78,7 @@ func TestLuis(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := json.Marshal(&bot.LuisResponse{
 			Entities: []bot.LuisEntity{
-				bot.LuisEntity{
+				{
 					Entity: "WORLD",
 					Score:  0.5,
 					Type:   "Thing",
@@ -83,13 +97,10 @@ func TestLuis(t *testing.T) {
 	}))
 	defer ts.Close()
 	ctx := context.TODO()
-	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:     true,
-		LuaFile:         "../test/luis.lua",
-		LuisURLTemplate: fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL),
-		MaxReconnect:    0,
-		NewIrcServer:    test.NewMockIrcServer,
-	})
+	cfg := stdConfig
+	cfg.LuaFile = "../test/luis.lua"
+	cfg.LuisURLTemplate = fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL)
+	b := bot.NewBananaBoatBot(ctx, cfg)
 	defer b.Close(ctx)
 	// Say hello
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -113,7 +124,7 @@ func TestOwm(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := json.Marshal(&bot.OWMResponse{
 			Conditions: []bot.OWMCondition{
-				bot.OWMCondition{
+				{
 					Description: "clear sky",
 				},
 			},
@@ -129,13 +140,11 @@ func TestOwm(t *testing.T) {
 	}))
 	defer ts.Close()
 	ctx := context.TODO()
-	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:    true,
-		LuaFile:        "../test/owm.lua",
-		OwmURLTemplate: fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL),
-		MaxReconnect:   0,
-		NewIrcServer:   test.NewMockIrcServer,
-	})
+	cfg := stdConfig
+	cfg.LuaFile = "../test/owm.lua"
+	cfg.OwmURLTemplate = fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL)
+
+	b := bot.NewBananaBoatBot(ctx, cfg)
 	defer b.Close(ctx)
 	// Say weather
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -160,12 +169,9 @@ func TestTitleScrape(t *testing.T) {
 	}))
 	defer ts.Close()
 	ctx := context.TODO()
-	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:  true,
-		LuaFile:      "../test/get_title.lua",
-		MaxReconnect: 0,
-		NewIrcServer: test.NewMockIrcServer,
-	})
+	cfg := stdConfig
+	cfg.LuaFile = "../test/get_title.lua"
+	b := bot.NewBananaBoatBot(ctx, cfg)
 	defer b.Close(ctx)
 	// Say URL
 	b.HandleHandlers(ctx, "test", &irc.Message{
@@ -212,12 +218,7 @@ func TestHandleServerError(t *testing.T) {
 	}()
 
 	// Create BananaBoatBot
-	b := bot.NewBananaBoatBot(ctx, &bot.BananaBoatBotConfig{
-		LogCommands:  true,
-		LuaFile:      "../test/trivial1.lua",
-		MaxReconnect: 0,
-		NewIrcServer: test.NewMockIrcServer,
-	})
+	b := bot.NewBananaBoatBot(ctx, stdConfig)
 
 	// Naive approach to faking error won't work properly (but here for coverage)
 	b.HandleErrors(ctx, "test", errors.New("something went wrong"))
