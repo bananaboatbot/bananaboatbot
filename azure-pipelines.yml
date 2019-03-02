@@ -38,12 +38,11 @@ steps:
     go get github.com/axw/gocov/gocov
     go get github.com/AlekSi/gocov-xml
     go get github.com/matm/gocov-html
-    go get github.com/jstemmer/go-junit-report
   workingDirectory: '$(modulePath)'
   displayName: 'Install test helpers'
 
 - script: |
-    go test ./... -test.timeout=30s -v -cover -race -coverprofile=cover.out | go-junit-report > report.xml
+    go test ./... -test.timeout=30s -v -cover -race -coverprofile=cover.out
   workingDirectory: '$(modulePath)'
   displayName: 'Run tests'
 
@@ -61,9 +60,3 @@ steps:
     summaryFileLocation: $(modulePath)/cover.xml
     reportDirectory: $(modulePath)/coverage
   displayName: Publish code coverage report
-
-- task: PublishTestResults@2
-  inputs:
-    testRunner: JUnit
-    testResultsFiles: $(modulePath)/report.xml
-  displayName: Publish test summary

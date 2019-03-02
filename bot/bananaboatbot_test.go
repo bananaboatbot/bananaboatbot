@@ -284,6 +284,7 @@ func TestDisconnectSanity(t *testing.T) {
 			numConnections++
 			if numConnections > 1 {
 				done <- struct{}{}
+				return
 			}
 			enc := irc.NewEncoder(conn)
 			dec := irc.NewDecoder(conn)
