@@ -7,9 +7,6 @@ strategy:
     windows:
       imageName: 'win1803'
 
-trigger:
-- master
-
 variables:
   GO111MODULE: 'on'
   GOBIN:  '$(GOPATH)/bin' # Go binaries path

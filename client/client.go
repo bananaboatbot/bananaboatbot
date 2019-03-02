@@ -172,36 +172,39 @@ func (s *IrcServer) Dial(ctx context.Context) {
 	}()
 	// Write loop
 	go s.sendMessages(ctx)
-	var connectCommands []*irc.Message
-	index := 0
-	// Send password if configured
-	if len(s.Settings.Basic.Password) > 0 {
-		connectCommands = make([]*irc.Message, 3)
-		connectCommands[0] = &irc.Message{
-			Command: irc.PASS,
-			Params:  []string{s.Settings.Basic.Password},
+	// Register connection
+	go func() {
+		var connectCommands []*irc.Message
+		index := 0
+		// Send password if configured
+		if len(s.Settings.Basic.Password) > 0 {
+			connectCommands = make([]*irc.Message, 3)
+			connectCommands[0] = &irc.Message{
+				Command: irc.PASS,
+				Params:  []string{s.Settings.Basic.Password},
+			}
+			index = 1
+		} else {
+			connectCommands = make([]*irc.Message, 2)
 		}
-		index = 1
-	} else {
-		connectCommands = make([]*irc.Message, 2)
-	}
-	connectCommands[index] = &irc.Message{
-		Command: irc.NICK,
-		Params:  []string{s.Settings.Basic.Nick},
-	}
-	index++
-	connectCommands[index] = &irc.Message{
-		Command: irc.USER,
-		Params:  []string{s.Settings.Basic.Username, "0", "*", s.Settings.Basic.Realname},
-	}
-	for _, cmd := range connectCommands {
-		err := s.encoder.Encode(cmd)
-		if err != nil {
-			// Call error callback
-			go s.Settings.ErrorCallback(ctx, s.name, err)
-			return
+		connectCommands[index] = &irc.Message{
+			Command: irc.NICK,
+			Params:  []string{s.Settings.Basic.Nick},
 		}
-	}
+		index++
+		connectCommands[index] = &irc.Message{
+			Command: irc.USER,
+			Params:  []string{s.Settings.Basic.Username, "0", "*", s.Settings.Basic.Realname},
+		}
+		for _, cmd := range connectCommands {
+			err := s.encoder.Encode(cmd)
+			if err != nil {
+				// Call error callback
+				go s.Settings.ErrorCallback(ctx, s.name, err)
+				return
+			}
+		}
+	}()
 }
 
 // IrcServerSettings contains all configuration for an IRC server

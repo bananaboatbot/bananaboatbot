@@ -58,6 +58,7 @@ func (b *BananaBoatBot) Close(ctx context.Context) {
 	b.serverReconnectMutex.Lock()
 	log.Print("Shutting down")
 	b.Servers.Range(func(k, value interface{}) bool {
+		b.Servers.Delete(k)
 		value.(client.IrcServerInterface).Close(ctx)
 		return true
 	})
@@ -194,21 +195,18 @@ func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err er
 	// Log the error
 	log.Printf("[%s] Connection error: %s", svrName, err)
 
-	b.serverReconnectMutex.Lock()
-
 	// Try reconnect to the server if still configured
 	svr, ok := b.Servers.Load(svrName)
 	// Server is no longer configured, do nothing
 	if !ok {
-		b.serverReconnectMutex.Unlock()
 		return
 	}
 	s := svr.(client.IrcServerInterface)
 	// Error doesn't belong to current incarnation, do nothing
 	if ctx.Done() != s.Done() {
-		b.serverReconnectMutex.Unlock()
 		return
 	}
+	b.serverReconnectMutex.Lock()
 	s.Close(ctx)
 	newSvr, svrCtx := b.Config.NewIrcServer(
 		b.luaState.Context(),
@@ -218,7 +216,9 @@ func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err er
 	b.Servers.Store(svrName, newSvr)
 	b.serverReconnectMutex.Unlock()
 	newSvr.ReconnectWait(svrCtx)
+	b.serverReconnectMutex.Lock()
 	newSvr.Dial(svrCtx)
+	b.serverReconnectMutex.Unlock()
 }
 
 // Set default values from table returned by Lua
@@ -285,12 +285,15 @@ func (b *BananaBoatBot) maybeCreateServer(ctx context.Context, serverNameStr str
 	svr, svrCtx := b.Config.NewIrcServer(ctx, serverNameStr, serverSettings)
 	// Set server to map
 	oldSvr, ok := b.Servers.Load(serverNameStr)
+	b.serverReconnectMutex.Lock()
 	if ok {
 		log.Printf("Destroying pre-existing IRC server: %s", serverNameStr)
+		b.Servers.Delete(serverNameStr)
 		oldSvr.(client.IrcServerInterface).Close(ctx)
 	}
 	b.Servers.Store(serverNameStr, svr)
-	go svr.(client.IrcServerInterface).Dial(svrCtx)
+	svr.(client.IrcServerInterface).Dial(svrCtx)
+	b.serverReconnectMutex.Unlock()
 }
 
 // Set and maintain servers based on table returned by Lua
@@ -389,8 +392,8 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 	b.Servers.Range(func(k, value interface{}) bool {
 		if _, ok := luaServerNames[k.(string)]; !ok {
 			log.Printf("Destroying removed IRC server: %s", k)
-			go value.(client.IrcServerInterface).Close(ctx)
 			b.Servers.Delete(k)
+			go value.(client.IrcServerInterface).Close(ctx)
 		}
 		return true
 	})
