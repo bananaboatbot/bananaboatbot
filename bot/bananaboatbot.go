@@ -55,6 +55,7 @@ type BananaBoatBot struct {
 
 // Close handles shutdown-related tasks
 func (b *BananaBoatBot) Close(ctx context.Context) {
+	b.serverReconnectMutex.Lock()
 	log.Print("Shutting down")
 	b.Servers.Range(func(k, value interface{}) bool {
 		value.(client.IrcServerInterface).Close(ctx)
@@ -63,6 +64,7 @@ func (b *BananaBoatBot) Close(ctx context.Context) {
 	b.luaMutex.Lock()
 	b.luaState.Close()
 	b.luaMutex.Unlock()
+	b.serverReconnectMutex.Unlock()
 }
 
 func luaParamsFromMessage(svrName string, msg *irc.Message) []lua.LValue {
