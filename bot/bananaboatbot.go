@@ -352,7 +352,7 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 		// Get 'realname' from table - use default if unavailable
 		lv = serverSettings.RawGetString("realname")
 		if ls, ok := lv.(lua.LString); ok {
-			lua.LVAsString(ls)
+			realname = lua.LVAsString(ls)
 		}
 
 		// Get 'username' from table - use default if unavailable

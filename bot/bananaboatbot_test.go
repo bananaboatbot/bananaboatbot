@@ -256,7 +256,8 @@ func TestHandleServerError(t *testing.T) {
 	<-done
 }
 
-func TestForUnwantedDisconnect(t *testing.T) {
+// Test that the bot won't reconnect when it shouldn't and vice versa
+func TestDisconnectSanity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -274,46 +275,65 @@ func TestForUnwantedDisconnect(t *testing.T) {
 	defer b.Close(ctx)
 
 	go func() {
-		conn, err := l.Accept()
-		if err != nil {
-			errors <- err
-		}
-		enc := irc.NewEncoder(conn)
-		dec := irc.NewDecoder(conn)
-		count := 3
-		test.WaitForRegistration(ctx, conn, dec, errors)
+		numConnections := 0
 		for {
-			conn.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
-			err := enc.Encode(&irc.Message{
-				Command: irc.PRIVMSG,
-				Params:  []string{"testbot1", "HELLO"},
-			})
+			conn, err := l.Accept()
 			if err != nil {
 				errors <- err
 			}
-			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
-			msg, err := dec.Decode()
-			if err != nil {
-				errors <- err
-				return
-			}
-			if len(msg.Params) != 2 {
-				errors <- fmt.Errorf("Unexpected number of parameters: %d (%s)", len(msg.Params), msg)
-				return
-			}
-			if msg.Params[1] != "HELLO" {
-				errors <- fmt.Errorf("%s != HELLO", msg.Params[1])
-				return
-			}
-			count--
-			if count == 0 {
+			numConnections++
+			if numConnections > 1 {
 				done <- struct{}{}
-				return
 			}
-			b.ReloadLua(ctx)
+			enc := irc.NewEncoder(conn)
+			dec := irc.NewDecoder(conn)
+			count := 0
+			test.WaitForRegistration(ctx, conn, dec, errors)
+			for {
+				conn.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
+				err := enc.Encode(&irc.Message{
+					Command: irc.PRIVMSG,
+					Params:  []string{"testbot1", "HELLO"},
+				})
+				if err != nil {
+					errors <- err
+					return
+				}
+				conn.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
+				msg, err := dec.Decode()
+				if err != nil {
+					errors <- err
+					return
+				}
+				if len(msg.Params) != 2 {
+					errors <- fmt.Errorf("Unexpected number of parameters: %d (%s)", len(msg.Params), msg)
+					return
+				}
+				if msg.Params[1] != "HELLO" {
+					errors <- fmt.Errorf("%s != HELLO", msg.Params[1])
+					return
+				}
+				count++
+				if count >= 3 {
+					done <- struct{}{}
+					break
+				} else {
+					b.ReloadLua(ctx)
+				}
+			}
 		}
 	}()
 
+	select {
+	case <-done:
+		break
+	case err := <-errors:
+		t.Fatal(err)
+	}
+
+	// Now test inverse case
+	b.Config.LuaFile = "../test/newname.lua"
+	b.ReloadLua(ctx)
 	select {
 	case <-done:
 		break
