@@ -584,6 +584,13 @@ func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 	return 2
 }
 
+// luaLibSleep provides the ability to sleep a goroutine
+func (b *BananaBoatBot) luaLibSleep(luaState *lua.LState) int {
+	// First argument should be number of milliseconds to sleep
+	time.Sleep(time.Millisecond * time.Duration(luaState.CheckNumber(1)))
+	return 0
+}
+
 // luaLibWorker runs a task in a goroutine
 func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 	defer luaState.SetTop(0)
@@ -721,6 +728,7 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 		"luis_predict": b.luaLibLuisPredict,
 		"owm":          b.luaLibOpenWeatherMap,
 		"random":       b.luaLibRandom,
+		"sleep":        b.luaLibSleep,
 		"worker":       b.luaLibWorker,
 	}
 	// Convert map to Lua table and push to stack
