@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fatalbanana/bananaboatbot/client"
+	"github.com/fatalbanana/bananaboatbot/glua/rate"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
 	irc "gopkg.in/sorcix/irc.v2"
@@ -755,6 +756,8 @@ func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua
 
 	// Provide access to our library functions in Lua
 	luaState.PreloadModule("bananaboat", b.luaLibLoader)
+	// Register ratelimiter in Lua
+	rate.RegisterGlobals(luaState)
 
 	// Tamper package.path according to configuration
 	if len(packageDir) > 0 {
