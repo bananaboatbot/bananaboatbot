@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -89,6 +90,83 @@ func luaParamsFromMessage(svrName string, msg *irc.Message) []lua.LValue {
 	return luaParams
 }
 
+func (b *BananaBoatBot) handleLuaReturnNames(ctx context.Context, svrName string, message *lua.LTable) error {
+	var params []string
+	// Get 'command' string from table
+	lv := message.RawGetString("command")
+	command := lua.LVAsString(lv)
+	if len(command) == 0 {
+		return errors.New("lua error: no command found in associative table")
+	}
+	// Get 'net' from table
+	lv = message.RawGetString("net")
+	net := lua.LVAsString(lv)
+	// If missing use the current server
+	if len(net) == 0 {
+		net = svrName
+	}
+	// Get 'params' table from table
+	lv = message.RawGetString("params")
+	if paramsT, ok := lv.(*lua.LTable); ok {
+		// Make a list of parameters
+		params = make([]string, paramsT.MaxN())
+		// Copy parameters from Lua
+		paramsIndex := 0
+		paramsT.ForEach(func(index lua.LValue, paramL lua.LValue) {
+			params[paramsIndex] = lua.LVAsString(paramL)
+			paramsIndex++
+		})
+	} else {
+		// No parameters, make an empty array
+		params = make([]string, 0)
+	}
+	err := b.sendMessage(svrName, &irc.Message{
+		Command: command,
+		Params:  params,
+	})
+	return err
+}
+
+func (b *BananaBoatBot) handleLuaReturnNumeric(ctx context.Context, svrName string, commandLV lua.LValue, message *lua.LTable) error {
+	var params []string
+	command := lua.LVAsString(commandLV)
+	if len(command) == 0 {
+		return errors.New("lua error: no command found in numeric table")
+	}
+	end := message.MaxN()
+	if end < 2 {
+		params = make([]string, 0)
+	} else {
+		paramsIndex := 0
+		params = make([]string, end-1)
+		for i := 2; i <= end; i++ {
+			lv := message.RawGetInt(i)
+			params[paramsIndex] = lua.LVAsString(lv)
+			paramsIndex++
+		}
+	}
+	err := b.sendMessage(svrName, &irc.Message{
+		Command: command,
+		Params:  params,
+	})
+	return err
+}
+
+func (b *BananaBoatBot) sendMessage(net string, ircMessage *irc.Message) error {
+	svr, ok := b.Servers.Load(net)
+	if ok {
+		select {
+		case svr.(client.IrcServerInterface).GetMessages() <- *ircMessage:
+			break
+		default:
+			return fmt.Errorf("Channel full, message to server dropped: %s", ircMessage)
+		}
+	} else {
+		return fmt.Errorf("Lua eror: Invalid server: %s", net)
+	}
+	return nil
+}
+
 func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, svrName string, luaState *lua.LState) {
 	// Ignore nil
 	lv := luaState.Get(-1)
@@ -99,51 +177,19 @@ func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, svrName strin
 	res := luaState.CheckTable(-1)
 	// For each numeric index in the table result...
 	res.ForEach(func(index lua.LValue, messageL lua.LValue) {
-		var command string
-		var params []string
 		// Get the nested table..
 		if message, ok := messageL.(*lua.LTable); ok {
-			// Get 'command' string from table
-			lv := message.RawGetString("command")
-			command = lua.LVAsString(lv)
-			// Get 'net' from table
-			lv = message.RawGetString("net")
-			net := lua.LVAsString(lv)
-			// If missing use the current server
-			if len(net) == 0 {
-				net = svrName
-			}
-			// Get 'params' table from table
-			lv = message.RawGetString("params")
-			if paramsT, ok := lv.(*lua.LTable); ok {
-				// Make a list of parameters
-				params = make([]string, paramsT.MaxN())
-				// Copy parameters from Lua
-				paramsIndex := 0
-				paramsT.ForEach(func(index lua.LValue, paramL lua.LValue) {
-					params[paramsIndex] = lua.LVAsString(paramL)
-					paramsIndex++
-				})
+			var err error
+			// Check if numeric index is present
+			lv := message.RawGetInt(1)
+			if lv.Type() == lua.LTNil {
+				err = b.handleLuaReturnNames(ctx, svrName, message)
 			} else {
-				// No parameters, make an empty array
-				params = make([]string, 0)
+				err = b.handleLuaReturnNumeric(ctx, svrName, lv, message)
 			}
-			// Create irc.Message
-			ircMessage := &irc.Message{
-				Command: command,
-				Params:  params,
-			}
-			// Send it to the server
-			svr, ok := b.Servers.Load(net)
-			if ok {
-				select {
-				case svr.(client.IrcServerInterface).GetMessages() <- *ircMessage:
-					break
-				default:
-					log.Printf("Channel full, message to server dropped: %s", ircMessage)
-				}
-			} else {
-				log.Printf("Lua eror: Invalid server: %s", net)
+			if err != nil {
+				log.Print(err)
+				return
 			}
 		}
 	})
