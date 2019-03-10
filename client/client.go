@@ -157,17 +157,28 @@ func (s *IrcServer) Dial(ctx context.Context) {
 			// Try decode message
 			msg, err := s.decoder.Decode()
 			// Handle error
-			if err != nil || msg.Command == irc.ERROR {
-				// Set error if needed
-				if err == nil && msg != nil && msg.Command == irc.ERROR {
-					err = fmt.Errorf("[%s] server error: %s", s.name, strings.Join(msg.Params, ", "))
-				}
+			if err != nil {
 				// Call error callback
 				go s.Settings.ErrorCallback(ctx, s.name, err)
 				return
 			}
-			// Invoke callback to handle input
-			s.Settings.InputCallback(ctx, s.name, msg)
+			switch msg.Command {
+			case irc.ERROR:
+				err = fmt.Errorf("[%s] server error: %s", s.name, strings.Join(msg.Params, ", "))
+				// Call error callback
+				go s.Settings.ErrorCallback(ctx, s.name, err)
+			case irc.PING:
+				msg.Command = irc.PONG
+				s.conn.SetWriteDeadline(time.Now().Add(time.Second * 300))
+				err = s.encoder.Encode(msg)
+				if err != nil {
+					// Call error callback
+					go s.Settings.ErrorCallback(ctx, s.name, err)
+				}
+			default:
+				// Invoke callback to handle input
+				go s.Settings.InputCallback(ctx, s.name, msg)
+			}
 		}
 	}()
 	// Write loop
