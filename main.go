@@ -11,6 +11,7 @@ import (
 	"github.com/fatalbanana/bananaboatbot/bot"
 	"github.com/fatalbanana/bananaboatbot/client"
 	blog "github.com/fatalbanana/bananaboatbot/log"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -52,6 +53,20 @@ func main() {
 			NewIrcServer:   client.NewIrcServer,
 		},
 	)
+
+	// Register metrics
+	b.Metrics.HandlersDuration = prometheus.NewSummary(prometheus.SummaryOpts{
+		Name: "bananaboatbot_handlers_duration_seconds",
+		Help: "Summary of handler processing durations",
+	})
+	b.Metrics.WorkersDuration = prometheus.NewSummary(prometheus.SummaryOpts{
+		Name: "bananaboatbot_workers_duration_seconds",
+		Help: "Summary of worker processing durations",
+	})
+
+	prometheus.MustRegister(b.Metrics.HandlersDuration)
+	prometheus.MustRegister(b.Metrics.WorkersDuration)
+
 	defer func() {
 		cancel()
 		b.Close(ctx)

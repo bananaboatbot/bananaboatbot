@@ -18,6 +18,7 @@ import (
 
 	"github.com/fatalbanana/bananaboatbot/client"
 	"github.com/fatalbanana/bananaboatbot/glua/rate"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
 	irc "gopkg.in/sorcix/irc.v2"
@@ -27,6 +28,8 @@ import (
 type BananaBoatBot struct {
 	// Config contains elements that are passed on initialization
 	Config *BananaBoatBotConfig
+	// Metrics contains performance metrics
+	Metrics *BananaBoatBotMetrics
 	// curNet is set to friendly name of network we're handling a message from
 	curNet string
 	// curMessage is set to the message being handled
@@ -53,6 +56,11 @@ type BananaBoatBot struct {
 	Servers sync.Map
 	// mutex for handling of servers
 	serverReconnectMutex sync.Mutex
+}
+
+type BananaBoatBotMetrics struct {
+	HandlersDuration prometheus.Summary
+	WorkersDuration  prometheus.Summary
 }
 
 // Close handles shutdown-related tasks
@@ -197,6 +205,10 @@ func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, svrName strin
 
 // HandleHandlers invokes any registered Lua handlers for a command
 func (b *BananaBoatBot) HandleHandlers(ctx context.Context, svrName string, msg *irc.Message) {
+	// Set up instrumentation
+	timer := prometheus.NewTimer(b.Metrics.HandlersDuration)
+	defer timer.ObserveDuration()
+	// Maybe log raw input
 	if b.Config.LogCommands {
 		// Log message
 		log.Printf("[%s] %s", svrName, msg)
@@ -658,6 +670,9 @@ func (b *BananaBoatBot) luaLibWorker(luaState *lua.LState) int {
 	}
 	// Run function in new goroutine
 	go func(functionProto *lua.FunctionProto, curNet string, curMessage *irc.Message) {
+		// Set up instrumentation
+		timer := prometheus.NewTimer(b.Metrics.WorkersDuration)
+		defer timer.ObserveDuration()
 		// Get luaState from pool
 		newState := b.luaPool.Get().(*lua.LState)
 		defer func() {
@@ -847,6 +862,7 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 	// Create BananaBoatBot
 	b := BananaBoatBot{
 		Config:   config,
+		Metrics:  new(BananaBoatBotMetrics),
 		handlers: make(map[string]*lua.LFunction),
 		nick:     "BananaBoatBot",
 		realname: "Banana Boat Bot",
