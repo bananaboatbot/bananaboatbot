@@ -115,7 +115,7 @@ func (b *BananaBoatBot) handleLuaReturnNames(ctx context.Context, svrName string
 			log.Print(logMessage)
 			return nil
 		}
-	} else {
+	} else if len(logMessage) > 0 {
 		// Handle logging and continue
 		log.Print(logMessage)
 	}
