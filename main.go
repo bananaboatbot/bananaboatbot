@@ -25,8 +25,14 @@ func main() {
 	maxReconnect := flag.Int("max-reconnect", 3600, "Maximum reconnect interval in seconds")
 	packageDir := flag.String("package-path", "", "Path to add to Lua package.path")
 	ringSize := flag.Int("ring-size", 100, "Number of entries in log ringbuffer")
+	version := flag.Bool("version", false, "Print version number & exit")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
+
+	if *version {
+		printVersion()
+		return
+	}
 
 	// Set up custom logger for maintaining log in ringbuffer
 	logger := blog.NewLogger(&blog.LoggerConfig{
