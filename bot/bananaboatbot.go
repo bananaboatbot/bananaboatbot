@@ -103,8 +103,21 @@ func (b *BananaBoatBot) handleLuaReturnNames(ctx context.Context, svrName string
 	// Get 'command' string from table
 	lv := message.RawGetString("command")
 	command := lua.LVAsString(lv)
+	// Get 'log' string from table
+	lv = message.RawGetString("log")
+	logMessage := lua.LVAsString(lv)
 	if len(command) == 0 {
-		return errors.New("lua error: no command found in associative table")
+		if len(logMessage) == 0 {
+			// If 'command' is missing and so is 'log', consider it an error
+			return errors.New("lua error: no command found in associative table")
+		} else {
+			// Or if we have just 'log' then log the message & return
+			log.Print(logMessage)
+			return nil
+		}
+	} else {
+		// Handle logging and continue
+		log.Print(logMessage)
 	}
 	// Get 'net' from table
 	lv = message.RawGetString("net")

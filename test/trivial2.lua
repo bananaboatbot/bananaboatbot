@@ -4,7 +4,7 @@ local botnick = bot.nick
 bot.handlers.PRIVMSG = function(net, nick, user, host, channel, message)
   if channel ~= botnick then return end
   if message == 'HELLO' then
-    return { {'PRIVMSG', botnick, 'GOODBYE'} }
+    return { {'PRIVMSG', botnick, 'GOODBYE'}, {log = 'CAU'} }
   end
 end
 return bot
