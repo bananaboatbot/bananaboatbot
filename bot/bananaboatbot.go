@@ -153,7 +153,7 @@ func (b *BananaBoatBot) handleLuaReturnNames(ctx context.Context, svrName string
 		// No parameters, make an empty array
 		params = make([]string, 0)
 	}
-	err := b.sendMessage(svrName, &irc.Message{
+	err := b.sendMessage(net, &irc.Message{
 		Command: command,
 		Params:  params,
 	})
