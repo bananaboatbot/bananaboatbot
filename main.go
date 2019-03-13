@@ -73,6 +73,7 @@ func main() {
 	}()
 
 	// Setup handlers for webserver
+	// reload reloads Lua
 	http.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
 		err := b.ReloadLua(ctx)
 		if err != nil {
@@ -81,9 +82,11 @@ func main() {
 			return
 		}
 	})
+	// log displays the log ringbuffer
 	http.HandleFunc("/log", func(w http.ResponseWriter, r *http.Request) {
 		w.Write(logger.ShowRing())
 	})
+	// quit exits the process
 	http.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
 		p, err := os.FindProcess(os.Getpid())
 		if err != nil {
@@ -98,7 +101,10 @@ func main() {
 			return
 		}
 	})
+	// metrics displays performance metrics using prometheus
 	http.Handle("/metrics", promhttp.Handler())
+	// rpc/foo calls functions defined in Lua
+	http.Handle("/rpc/", b)
 	// Start webserver
 	go http.ListenAndServe(*webAddr, nil)
 

@@ -54,13 +54,25 @@ type BananaBoatBot struct {
 	username string
 	// servers is a map of friendly names to IRC servers
 	Servers sync.Map
-	// mutex for handling of servers
+	// mutex for handling of server reconnecting
 	serverReconnectMutex sync.Mutex
+	// Map of endpoint names to function prototypes
+	web map[string]BananaBoatBotWebFunc
+	// Mutex protecting web map
+	webMutex sync.RWMutex
 }
 
+// BananaBoatBotMetrics contains performance metrics
 type BananaBoatBotMetrics struct {
 	HandlersDuration prometheus.Summary
 	WorkersDuration  prometheus.Summary
+}
+
+// BananaBoatBotWebFunc contains RPC functions defined in Lua
+type BananaBoatBotWebFunc struct {
+	Function       *lua.LFunction
+	FunctionProto  *lua.FunctionProto
+	UseSharedState bool
 }
 
 // Close handles shutdown-related tasks
@@ -180,10 +192,10 @@ func (b *BananaBoatBot) sendMessage(net string, ircMessage *irc.Message) error {
 		case svr.(client.IrcServerInterface).GetMessages() <- *ircMessage:
 			break
 		default:
-			return fmt.Errorf("Channel full, message to server dropped: %s", ircMessage)
+			return fmt.Errorf("channel full, message to server dropped: %s", ircMessage)
 		}
 	} else {
-		return fmt.Errorf("Lua eror: Invalid server: %s", net)
+		return fmt.Errorf("lua eror: Invalid server: %s", net)
 	}
 	return nil
 }
@@ -214,6 +226,57 @@ func (b *BananaBoatBot) handleLuaReturnValues(ctx context.Context, svrName strin
 			}
 		}
 	})
+}
+
+// ServeHTTP calls functions defined in Lua
+func (b *BananaBoatBot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Try find last element of path in map...
+	name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+	b.webMutex.RLock()
+	webFunc, ok := b.web[name]
+	b.webMutex.RUnlock()
+	if !ok {
+		http.Error(w, "does not exist", http.StatusNotFound)
+		return
+	}
+	// Set up state and function as appropriate
+	var state *lua.LState
+	var luaFunction *lua.LFunction
+	if webFunc.UseSharedState {
+		state = b.luaState
+		luaFunction = webFunc.Function
+		b.luaMutex.Lock()
+		defer b.luaMutex.Unlock()
+	} else {
+		state = b.luaPool.Get().(*lua.LState)
+		defer func() {
+			// Clear stack and return state to pool
+			state.SetTop(0)
+			b.luaPool.Put(state)
+		}()
+		luaFunction = state.NewFunctionFromProto(webFunc.FunctionProto)
+	}
+	luaParams := state.CreateTable(0, 0)
+	q := r.URL.Query()
+	for label, values := range q {
+		lValues := state.CreateTable(0, 0)
+		for _, value := range values {
+			lValues.Append(lua.LString(value))
+		}
+		state.RawSet(luaParams, lua.LString(label), lValues)
+	}
+	// Call function
+	err := state.CallByParam(lua.P{
+		Fn:      luaFunction,
+		NRet:    1,
+		Protect: true,
+	}, luaParams)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Handle return values
+	b.handleLuaReturnValues(state.Context(), "", state)
 }
 
 // HandleHandlers invokes any registered Lua handlers for a command
@@ -369,6 +432,79 @@ func (b *BananaBoatBot) maybeCreateServer(ctx context.Context, serverNameStr str
 }
 
 // Set and maintain servers based on table returned by Lua
+func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
+	// Get 'web' from table, expect table result
+	lv := tbl.RawGetString("web")
+	if lv.Type() == lua.LTNil {
+		return
+	}
+	webTbl, ok := lv.(*lua.LTable)
+	if !ok {
+		log.Printf("lua reload error: unexpected web type: %s", lv.Type())
+		return
+	}
+	// Iterate table, set function prototypes to map
+	luaWebNames := make(map[string]struct{})
+	b.webMutex.Lock()
+	defer b.webMutex.Unlock()
+	// Iterate over nested tables...
+	webTbl.ForEach(func(nameLV lua.LValue, webSettingsLV lua.LValue) {
+
+		// Get nested table
+		webSettings, ok := webSettingsLV.(*lua.LTable)
+		if !ok {
+			log.Printf("found unexpected type inside web: %s", lv.Type())
+			return
+		}
+
+		// Use name from key in the parent table
+		name := lua.LVAsString(nameLV)
+
+		// Get function from 'func' key
+		lv := webSettings.RawGetString("func")
+		webFunc, ok := lv.(*lua.LFunction)
+		if !ok {
+			log.Printf("lua reload error: unexpected type at web:%s:func: %s", name, lv.Type())
+			return
+		}
+
+		// Get bool from 'use_shared_state' key
+		useSharedState := false
+		lv = webSettings.RawGetString("use_shared_state")
+		if lv.Type() != lua.LTNil {
+			useSharedStateLV, ok := lv.(lua.LBool)
+			if !ok {
+				log.Printf("lua reload error: unexpected type at web:%s:use_shared_state: %s", name, lv.Type())
+				return
+			}
+			if useSharedStateLV == lua.LTrue {
+				useSharedState = true
+			}
+		}
+
+		ourWebFunc := BananaBoatBotWebFunc{
+			UseSharedState: useSharedState,
+		}
+
+		if useSharedState {
+			ourWebFunc.Function = webFunc
+		} else {
+			ourWebFunc.FunctionProto = webFunc.Proto
+		}
+
+		b.web[name] = ourWebFunc
+		luaWebNames[name] = struct{}{}
+	})
+	// Delete handlers no longer defined in Lua
+	for k := range b.web {
+		_, ok := luaWebNames[k]
+		if !ok {
+			delete(b.web, k)
+		}
+	}
+}
+
+// Set and maintain servers based on table returned by Lua
 func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) {
 	// Make map of server names collected from Lua
 	luaServerNames := make(map[string]struct{})
@@ -498,6 +634,9 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 
 	// Deal with 'servers'
 	b.setServersFromLua(ctx, tbl)
+
+	// Deal with 'web'
+	b.setWebFromLua(ctx, tbl)
 
 	return nil
 }
@@ -880,6 +1019,7 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 		nick:     "BananaBoatBot",
 		realname: "Banana Boat Bot",
 		username: "bananarama",
+		web:      make(map[string]BananaBoatBotWebFunc),
 	}
 
 	// Create new shared Lua state
