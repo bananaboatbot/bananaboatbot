@@ -76,6 +76,42 @@ func TestReload(t *testing.T) {
 	}
 }
 
+func TestRPC(t *testing.T) {
+	ctx := context.TODO()
+	// Create BananaBoatBot
+	cloneCfg := stdConfig
+	cloneCfg.LuaFile = "../test/rpc.lua"
+	b := bot.NewBananaBoatBot(ctx, &cloneCfg)
+	defer b.Close(ctx)
+	// Create test webserver
+	ts := httptest.NewServer(b)
+	defer ts.Close()
+	endPoints := []string{"hello", "hello_shared"}
+	for _, fragment := range endPoints {
+		// Say hello
+		resp, err := http.Get(fmt.Sprintf("%s/rpc/%s?p1=HI%%20THERE", ts.URL, fragment))
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatal(fmt.Errorf("got bad HTTP status [%d]", resp.StatusCode))
+		}
+	}
+	// Read response
+	svrI, _ := b.Servers.Load("test")
+	messages := svrI.(client.IrcServerInterface).GetMessages()
+	for range endPoints {
+		msg := <-messages
+		if msg.Command != irc.PRIVMSG {
+			t.Fatalf("Got wrong message type in response1: %s", msg.Command)
+		}
+		if msg.Params[1] != "HI THERE" {
+			t.Fatalf("Got wrong parameters in response1: %s", strings.Join(msg.Params, ","))
+		}
+	}
+}
+
 func TestLuis(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := json.Marshal(&bot.LuisResponse{
