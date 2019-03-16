@@ -18,10 +18,12 @@ import (
 
 	"github.com/fatalbanana/bananaboatbot/client"
 	"github.com/fatalbanana/bananaboatbot/glua/rate"
+	"github.com/fatalbanana/gluahttp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
 	irc "gopkg.in/sorcix/irc.v2"
+	luajson "layeh.com/gopher-json"
 )
 
 // BananaBoatBot contains config & state of the bot
@@ -977,6 +979,9 @@ func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua
 
 	// Provide access to our library functions in Lua
 	luaState.PreloadModule("bananaboat", b.luaLibLoader)
+	// Provide some third-party libraries
+	luaState.PreloadModule("http", gluahttp.NewHttpModule(&b.httpClient).Loader)
+	luaState.PreloadModule("json", luajson.Loader)
 	// Register ratelimiter in Lua
 	rate.RegisterGlobals(luaState)
 

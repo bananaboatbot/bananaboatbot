@@ -6,6 +6,8 @@ github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWR
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5PlCu98SY8svDHJxuZscDgtXS6KTTbou5AhLI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1/go.mod h1:Q3SI9o4m/ZMnBNeIyt5eFwwo7qiLfzFZmjNmxjkiQlU=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/fatalbanana/gluahttp v1.0.0 h1:l7U5kSW+x3AFPIqNQaUewum4+XUDvNWEJEcuQqq6sdw=
+github.com/fatalbanana/gluahttp v1.0.0/go.mod h1:/tvsUik6kJIKIQxWnYjmvQbzKh7/NV+VfHwPRK2gw4w=
 github.com/go-kit/kit v0.8.0/go.mod h1:xBxKIO96dXMWWy0MnWVtmwkA9/13aqxPnvrjFYMA2as=
 github.com/go-logfmt/logfmt v0.3.0/go.mod h1:Qt1PoO58o5twSAckw1HlFXLmHsOX5/0LbT9GBnD5lWE=
 github.com/go-stack/stack v1.8.0/go.mod h1:v0f6uXyyMGvRgIKkXu+yp6POWl0qKG85gN/melR3HDY=
@@ -60,3 +62,5 @@ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8
 gopkg.in/sorcix/irc.v2 v2.0.0-20180626144439-63eed78b082d h1:Qa1MG3xsTnT+SyhctasXKjZX1H7PtTcPRGFr5pyiG2E=
 gopkg.in/sorcix/irc.v2 v2.0.0-20180626144439-63eed78b082d/go.mod h1:9LLe1SvUK2YoWyIuJ+AParKHhu749G8oM+HTQQMZz9E=
 gopkg.in/yaml.v2 v2.2.1/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
+layeh.com/gopher-json v0.0.0-20190114024228-97fed8db8427 h1:RZkKxMR3jbQxdCEcglq3j7wY3PRJIopAwBlx1RE71X0=
+layeh.com/gopher-json v0.0.0-20190114024228-97fed8db8427/go.mod h1:ivKkcY8Zxw5ba0jldhZCYYQfGdb2K6u9tbYK1AwMIBc=
