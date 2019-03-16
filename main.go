@@ -84,6 +84,7 @@ func main() {
 	})
 	// log displays the log ringbuffer
 	http.HandleFunc("/log", func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
 		w.Write(logger.ShowRing())
 	})
 	// quit exits the process
