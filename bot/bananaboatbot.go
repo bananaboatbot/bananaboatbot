@@ -72,9 +72,11 @@ type BananaBoatBotMetrics struct {
 
 // BananaBoatBotWebFunc contains RPC functions defined in Lua
 type BananaBoatBotWebFunc struct {
-	Function       *lua.LFunction
-	FunctionProto  *lua.FunctionProto
-	UseSharedState bool
+	Function         *lua.LFunction
+	FunctionProto    *lua.FunctionProto
+	ParseJsonBody    bool
+	ParseQueryString bool
+	UseSharedState   bool
 }
 
 // Close handles shutdown-related tasks
@@ -258,21 +260,55 @@ func (b *BananaBoatBot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}()
 		luaFunction = state.NewFunctionFromProto(webFunc.FunctionProto)
 	}
-	luaParams := state.CreateTable(0, 0)
-	q := r.URL.Query()
-	for label, values := range q {
-		lValues := state.CreateTable(0, 0)
-		for _, value := range values {
-			lValues.Append(lua.LString(value))
+
+	// Create list of values to return
+	luaParams := make([]lua.LValue, 2)
+
+	// Add parsed query string or nil according to configuration
+	if webFunc.ParseQueryString {
+		queryTbl := state.CreateTable(0, 0)
+		q := r.URL.Query()
+		for label, values := range q {
+			lValues := state.CreateTable(0, 0)
+			for _, value := range values {
+				lValues.Append(lua.LString(value))
+			}
+			state.RawSet(queryTbl, lua.LString(label), lValues)
 		}
-		state.RawSet(luaParams, lua.LString(label), lValues)
+		luaParams[0] = queryTbl
+	} else {
+		luaParams[0] = lua.LNil
 	}
+
+	// Try parse JSON body according to configuration
+	if webFunc.ParseJsonBody {
+		if r.Body == nil {
+			luaParams[1] = lua.LNil
+		} else {
+			dec := json.NewDecoder(r.Body)
+			jsonMap := make(map[string]interface{})
+			err := dec.Decode(&jsonMap)
+			if err != nil {
+				log.Printf("Error parsing JSON body for %s: %s", name, err)
+				luaParams[1] = lua.LNil
+			} else {
+				jsonTbl := state.CreateTable(0, 0)
+				for key, value := range jsonMap {
+					jsonTbl.RawSetString(key, luajson.DecodeValue(state, value))
+				}
+				luaParams[1] = jsonTbl
+			}
+		}
+	} else {
+		luaParams[1] = lua.LNil
+	}
+
 	// Call function
 	err := state.CallByParam(lua.P{
 		Fn:      luaFunction,
 		NRet:    1,
 		Protect: true,
-	}, luaParams)
+	}, luaParams...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -470,7 +506,7 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 			return
 		}
 
-		// Get bool from 'use_shared_state' key
+		// Get bool from 'use_shared_state' key (default false)
 		useSharedState := false
 		lv = webSettings.RawGetString("use_shared_state")
 		if lv.Type() != lua.LTNil {
@@ -484,8 +520,38 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 			}
 		}
 
+		// Get bool from 'parse_query_string' key (default true)
+		parseQueryString := true
+		lv = webSettings.RawGetString("parse_query_string")
+		if lv.Type() != lua.LTNil {
+			parseQueryStringLV, ok := lv.(lua.LBool)
+			if !ok {
+				log.Printf("lua reload error: unexpected type at web:%s:parse_query_string: %s", name, lv.Type())
+				return
+			}
+			if parseQueryStringLV == lua.LFalse {
+				useSharedState = false
+			}
+		}
+
+		// Get bool from 'parse_json_body' key (default false)
+		parseJsonBody := false
+		lv = webSettings.RawGetString("parse_json_body")
+		if lv.Type() != lua.LTNil {
+			parseJsonBodyLV, ok := lv.(lua.LBool)
+			if !ok {
+				log.Printf("lua reload error: unexpected type at web:%s:parse_query_string: %s", name, lv.Type())
+				return
+			}
+			if parseJsonBodyLV == lua.LTrue {
+				parseJsonBody = true
+			}
+		}
+
 		ourWebFunc := BananaBoatBotWebFunc{
-			UseSharedState: useSharedState,
+			ParseJsonBody:    parseJsonBody,
+			ParseQueryString: parseQueryString,
+			UseSharedState:   useSharedState,
 		}
 
 		if useSharedState {

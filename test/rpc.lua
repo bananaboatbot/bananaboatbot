@@ -17,4 +17,13 @@ handle_hello_shared.func = function(d)
   }
 end
 bot.web.hello_shared = handle_hello_shared
+bot.web.hello_json = {
+  parse_query_string = false,
+  parse_json_body = true,
+  func = function(_, j)
+    return {
+      {net = 'test', command = 'PRIVMSG', params = {'foo', j['p1'][1]}}
+    }
+  end
+}
 return bot

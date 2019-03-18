@@ -1,6 +1,7 @@
 package bot_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,17 +87,33 @@ func TestRPC(t *testing.T) {
 	// Create test webserver
 	ts := httptest.NewServer(b)
 	defer ts.Close()
-	endPoints := []string{"hello", "hello_shared"}
-	for _, fragment := range endPoints {
+	endPoints := []string{"hello", "hello_shared", "hello_json"}
+	for _, fragment := range []string{"hello", "hello_shared"} {
 		// Say hello
 		resp, err := http.Get(fmt.Sprintf("%s/rpc/%s?p1=HI%%20THERE", ts.URL, fragment))
-		resp.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
+		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatal(fmt.Errorf("got bad HTTP status [%d]", resp.StatusCode))
 		}
+	}
+	for _, fragment := range []string{"hello_json"} {
+		// Say hello
+		resp, err := http.Post(fmt.Sprintf("%s/rpc/%s", ts.URL, fragment), "application/json", bytes.NewReader([]byte(`{"p1":["HI THERE"]}`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatal(fmt.Errorf("got bad HTTP status [%d]", resp.StatusCode))
+		}
+		resp, _ = http.Post(fmt.Sprintf("%s/rpc/%s", ts.URL, fragment), "application/json", bytes.NewReader([]byte(`GARBAGE`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
 	}
 	// Read response
 	svrI, _ := b.Servers.Load("test")
