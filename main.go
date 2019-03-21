@@ -17,6 +17,7 @@ import (
 
 const (
 	defaultIrcPort = 6667
+	majorVersion   = "v2"
 )
 
 func main() {

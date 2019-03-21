@@ -8,5 +8,5 @@ import (
 )
 
 func printVersion() {
-	fmt.Println(fmt.Sprintf("(unknown) (%s)", runtime.Version()))
+	fmt.Println(fmt.Sprintf("%s.x.x (%s)", majorVersion, runtime.Version()))
 }

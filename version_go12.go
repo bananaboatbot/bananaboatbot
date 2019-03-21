@@ -9,7 +9,7 @@ import (
 )
 
 func printVersion() {
-	version := "(unknown)"
+	version := fmt.Sprintf("%s.x.x", majorVersion)
 	info, ok := debug.ReadBuildInfo()
 	if ok {
 		version = info.Main.Version
