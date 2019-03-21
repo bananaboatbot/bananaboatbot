@@ -9,10 +9,14 @@ import (
 )
 
 func printVersion() {
-	version := fmt.Sprintf("%s.x.x", majorVersion)
+	var version string
 	info, ok := debug.ReadBuildInfo()
 	if ok {
-		version = info.Main.Version
+		if info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		} else {
+			version = fmt.Sprintf("%s.x.x", majorVersion)
+		}
 	}
 	fmt.Println(fmt.Sprintf("%s (%s)", version, runtime.Version()))
 }
