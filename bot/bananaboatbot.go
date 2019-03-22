@@ -18,6 +18,7 @@ import (
 
 	"github.com/bananaboatbot/bananaboatbot/client"
 	"github.com/bananaboatbot/bananaboatbot/glua/rate"
+	"github.com/bananaboatbot/bananaboatbot/util"
 	"github.com/bananaboatbot/gluahttp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/yuin/gopher-lua"
@@ -487,80 +488,16 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 	defer b.webMutex.Unlock()
 	// Iterate over nested tables...
 	webTbl.ForEach(func(nameLV lua.LValue, webSettingsLV lua.LValue) {
-
-		// Get nested table
-		webSettings, ok := webSettingsLV.(*lua.LTable)
-		if !ok {
-			log.Printf("found unexpected type inside web: %s", lv.Type())
-			return
-		}
-
 		// Use name from key in the parent table
 		name := lua.LVAsString(nameLV)
-
-		// Get function from 'func' key
-		lv := webSettings.RawGetString("func")
-		webFunc, ok := lv.(*lua.LFunction)
-		if !ok {
-			log.Printf("lua reload error: unexpected type at web:%s:func: %s", name, lv.Type())
+		// Create BananaBoatWebFunc from nested table
+		ourWebFunc := b.createWebFuncFromTable(name, webSettingsLV)
+		if ourWebFunc == nil {
 			return
 		}
-
-		// Get bool from 'use_shared_state' key (default false)
-		useSharedState := false
-		lv = webSettings.RawGetString("use_shared_state")
-		if lv.Type() != lua.LTNil {
-			useSharedStateLV, ok := lv.(lua.LBool)
-			if !ok {
-				log.Printf("lua reload error: unexpected type at web:%s:use_shared_state: %s", name, lv.Type())
-				return
-			}
-			if useSharedStateLV == lua.LTrue {
-				useSharedState = true
-			}
-		}
-
-		// Get bool from 'parse_query_string' key (default true)
-		parseQueryString := true
-		lv = webSettings.RawGetString("parse_query_string")
-		if lv.Type() != lua.LTNil {
-			parseQueryStringLV, ok := lv.(lua.LBool)
-			if !ok {
-				log.Printf("lua reload error: unexpected type at web:%s:parse_query_string: %s", name, lv.Type())
-				return
-			}
-			if parseQueryStringLV == lua.LFalse {
-				useSharedState = false
-			}
-		}
-
-		// Get bool from 'parse_json_body' key (default false)
-		parseJsonBody := false
-		lv = webSettings.RawGetString("parse_json_body")
-		if lv.Type() != lua.LTNil {
-			parseJsonBodyLV, ok := lv.(lua.LBool)
-			if !ok {
-				log.Printf("lua reload error: unexpected type at web:%s:parse_query_string: %s", name, lv.Type())
-				return
-			}
-			if parseJsonBodyLV == lua.LTrue {
-				parseJsonBody = true
-			}
-		}
-
-		ourWebFunc := BananaBoatBotWebFunc{
-			ParseJsonBody:    parseJsonBody,
-			ParseQueryString: parseQueryString,
-			UseSharedState:   useSharedState,
-		}
-
-		if useSharedState {
-			ourWebFunc.Function = webFunc
-		} else {
-			ourWebFunc.FunctionProto = webFunc.Proto
-		}
-
-		b.web[name] = ourWebFunc
+		// If we got a result set it to the map...
+		b.web[name] = *ourWebFunc
+		// And remember that the name was found to assist cleanup
 		luaWebNames[name] = struct{}{}
 	})
 	// Delete handlers no longer defined in Lua
@@ -570,6 +507,47 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 			delete(b.web, k)
 		}
 	}
+}
+
+func (b *BananaBoatBot) createWebFuncFromTable(name string, webSettingsLV lua.LValue) *BananaBoatBotWebFunc {
+
+	// Get nested table
+	webSettings, ok := webSettingsLV.(*lua.LTable)
+	if !ok {
+		log.Printf("found unexpected type inside web: %s", webSettingsLV.Type())
+		return nil
+	}
+
+	// Get function from 'func' key
+	lv := webSettings.RawGetString("func")
+	webFunc, ok := lv.(*lua.LFunction)
+	if !ok {
+		log.Printf("lua reload error: unexpected type at web:%s:func: %s", name, lv.Type())
+		return nil
+	}
+
+	// Get bool from 'use_shared_state' key (default false)
+	useSharedState := util.BoolFromTable(webSettings, "use_shared_state", false)
+
+	// Get bool from 'parse_query_string' key (default true)
+	parseQueryString := util.BoolFromTable(webSettings, "parse_query_string", true)
+
+	// Get bool from 'parse_json_body' key (default false)
+	parseJsonBody := util.BoolFromTable(webSettings, "parse_json_body", false)
+
+	ourWebFunc := BananaBoatBotWebFunc{
+		ParseJsonBody:    parseJsonBody,
+		ParseQueryString: parseQueryString,
+		UseSharedState:   useSharedState,
+	}
+
+	if useSharedState {
+		ourWebFunc.Function = webFunc
+	} else {
+		ourWebFunc.FunctionProto = webFunc.Proto
+	}
+
+	return &ourWebFunc
 }
 
 // Set and maintain servers based on table returned by Lua
@@ -598,25 +576,17 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 		nick := b.nick
 		portInt := b.Config.DefaultIrcPort
 		realname := b.realname
-		tls := false
 		username := b.username
-		verifyTLS := true
 
 		// Get 'server' string from table
 		lv = serverSettings.RawGetString("server")
 		host := lua.LVAsString(lv)
 
 		// Get 'tls' bool from table (default false)
-		lv = serverSettings.RawGetString("tls")
-		if lv, ok := lv.(lua.LBool); ok {
-			tls = bool(lv)
-		}
+		tls := util.BoolFromTable(serverSettings, "tls", false)
 
 		// Get 'tls_verify' bool from table (default true)
-		lv = serverSettings.RawGetString("tls_verify")
-		if lv == lua.LFalse {
-			verifyTLS = false
-		}
+		verifyTLS := util.BoolFromTable(serverSettings, "tls_verify", true)
 
 		// Get 'port' from table (use default from so-called config)
 		lv = serverSettings.RawGetString("port")
