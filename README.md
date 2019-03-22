@@ -6,12 +6,12 @@ A simple IRC bot written in [Go](https://golang.org/) scriptable with [Gopher-Lu
 
 ## Features
 
-* Supports use of multiple servers
-* Reloading of Lua in runtime (to reconfigure handlers & servers)
-* Simple design & operation
-* Ringbuffer for displaying logs in WebUI
-* Built-in utilities: OpenWeatherMap, Luis.ai, HTML title scraping
-* Reasonable test coverage (is that a feature? oh well)
+  * Supports use of multiple servers
+  * Reloading of Lua in runtime (to reconfigure handlers & servers)
+  * Simple design & operation: easy learning curve & full flexibility
+  * Ringbuffer for displaying logs in WebUI
+  * Built-in utilities: OpenWeatherMap, Luis.ai, HTML title scraping
+  * Reasonable test coverage (is that a feature? oh well)
 
 ## Usage
 
