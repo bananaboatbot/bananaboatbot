@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fatalbanana/bananaboatbot/client"
+	"github.com/bananaboatbot/bananaboatbot/client"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 

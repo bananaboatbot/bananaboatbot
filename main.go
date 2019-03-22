@@ -8,9 +8,9 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/fatalbanana/bananaboatbot/bot"
-	"github.com/fatalbanana/bananaboatbot/client"
-	blog "github.com/fatalbanana/bananaboatbot/log"
+	"github.com/bananaboatbot/bananaboatbot/bot"
+	"github.com/bananaboatbot/bananaboatbot/client"
+	blog "github.com/bananaboatbot/bananaboatbot/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )

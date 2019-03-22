@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatalbanana/bananaboatbot/client"
-	"github.com/fatalbanana/bananaboatbot/glua/rate"
-	"github.com/fatalbanana/gluahttp"
+	"github.com/bananaboatbot/bananaboatbot/client"
+	"github.com/bananaboatbot/bananaboatbot/glua/rate"
+	"github.com/bananaboatbot/gluahttp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"

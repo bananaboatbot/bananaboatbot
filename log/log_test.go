@@ -5,7 +5,7 @@ import (
 	"log"
 	"testing"
 
-	blog "github.com/fatalbanana/bananaboatbot/log"
+	blog "github.com/bananaboatbot/bananaboatbot/log"
 )
 
 func TestLogger(t *testing.T) {

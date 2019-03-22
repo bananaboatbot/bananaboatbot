@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fatalbanana/bananaboatbot/client"
-	"github.com/fatalbanana/bananaboatbot/test"
+	"github.com/bananaboatbot/bananaboatbot/client"
+	"github.com/bananaboatbot/bananaboatbot/test"
 	irc "gopkg.in/sorcix/irc.v2"
 )
 

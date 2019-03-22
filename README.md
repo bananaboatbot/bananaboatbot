@@ -1,6 +1,6 @@
 # BananaBoatBot
 
-[![Build Status](https://dev.azure.com/spacenerve/fatalbanana/_apis/build/status/fatalbanana.bananaboatbot?branchName=master)](https://dev.azure.com/spacenerve/fatalbanana/_build/latest?definitionId=1&branchName=master)
+[![Build Status](https://dev.azure.com/spacenerve/bananaboatbot/_apis/build/status/bananaboatbot.bananaboatbot?branchName=master)](https://dev.azure.com/spacenerve/bananaboatbot/_build/latest?definitionId=1&branchName=master)
 
 A simple IRC bot written in [Go](https://golang.org/) scriptable with [Gopher-Lua](https://github.com/yuin/gopher-lua).
 
