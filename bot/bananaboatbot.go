@@ -10,7 +10,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -679,137 +678,6 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	return nil
 }
 
-// OWMResponse represents the main OpenWeatherMap JSON response
-type OWMResponse struct {
-	Conditions []OWMCondition `json:"weather"`
-	Main       OWMMain        `json:"main"`
-}
-
-// OWMCondition represents some description of a weather condition
-type OWMCondition struct {
-	Description string `json:"description"`
-}
-
-// OWMMain contains 'main' OWM result (we're only interested in temperature)
-type OWMMain struct {
-	Temperature float64 `json:"temp"`
-}
-
-// luaLibOpenWeatherMap gets weather for a city
-func (b *BananaBoatBot) luaLibOpenWeatherMap(luaState *lua.LState) int {
-	apiKey := luaState.CheckString(1)
-	location := luaState.CheckString(2)
-	owmURL := fmt.Sprintf(b.Config.OwmURLTemplate, apiKey, location)
-	resp, err := b.httpClient.Get(owmURL)
-	if err != nil {
-		log.Printf("HTTP client error: %s", err)
-		return 0
-	}
-	if ct, ok := resp.Header["Content-Type"]; ok {
-		if ct[0][:16] != "application/json" {
-			log.Printf("OWM GET aborted: wrong content-type: %s", ct[0])
-			return 0
-		}
-	} else {
-		log.Print("OWM GET aborted: no content-type header")
-		return 0
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("OWM GET returned non-OK status: %d", resp.StatusCode)
-		return 0
-	}
-	dec := json.NewDecoder(resp.Body)
-	owmResponse := &OWMResponse{}
-	err = dec.Decode(&owmResponse)
-	if err != nil {
-		log.Printf("OWM response decode failed: %s", err)
-		return 0
-	}
-	numConditions := len(owmResponse.Conditions) + 1
-	conditions := make([]string, numConditions)
-	conditions[0] = fmt.Sprintf("%.f°", owmResponse.Main.Temperature)
-	i := 1
-	for _, v := range owmResponse.Conditions {
-		conditions[i] = v.Description
-		i++
-	}
-	luaState.Push(lua.LString(strings.Join(conditions, ", ")))
-	return 1
-}
-
-// LuisResponse represents a Luis.ai prediction result
-type LuisResponse struct {
-	TopScoringIntent LuisTopScoringIntent `json:"topScoringIntent"`
-	Entities         []LuisEntity         `json:"entities"`
-}
-
-// LuisTopScoringIntent represents the top scoring intent & its score
-type LuisTopScoringIntent struct {
-	Intent string  `json:"intent"`
-	Score  float64 `json:"score"`
-}
-
-// LuisEntity represents a specific entity, it's type & score
-type LuisEntity struct {
-	Entity string  `json:"entity"`
-	Type   string  `json:"type"`
-	Score  float64 `json:"score"`
-}
-
-// luaLibLuisPredict predicts intention using luis.ai
-func (b *BananaBoatBot) luaLibLuisPredict(luaState *lua.LState) int {
-	region := luaState.CheckString(1)
-	appID := luaState.CheckString(2)
-	endpointKey := luaState.CheckString(3)
-	utterance := luaState.CheckString(4)
-	if len(utterance) > 500 {
-		utterance = utterance[:500]
-	}
-	luisURL := fmt.Sprintf(b.Config.LuisURLTemplate, region, appID, endpointKey, url.QueryEscape(utterance))
-	resp, err := b.httpClient.Get(luisURL)
-	if err != nil {
-		log.Printf("HTTP client error: %s", err)
-		return 0
-	}
-	if ct, ok := resp.Header["Content-Type"]; ok {
-		if ct[0][:16] != "application/json" {
-			log.Printf("Luis GET aborted: wrong content-type: %s", ct[0])
-			return 0
-		}
-	} else {
-		log.Print("Luis GET aborted: no content-type header")
-		return 0
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Luis GET returned non-OK status: %d", resp.StatusCode)
-		return 0
-	}
-	dec := json.NewDecoder(resp.Body)
-	luisResponse := &LuisResponse{}
-	err = dec.Decode(&luisResponse)
-	if err != nil {
-		log.Printf("Luis response decode failed: %s", err)
-		return 0
-	}
-	if luisResponse.TopScoringIntent.Intent == "" {
-		return 0
-	}
-	luaState.Push(lua.LString(luisResponse.TopScoringIntent.Intent))
-	luaState.Push(lua.LNumber(luisResponse.TopScoringIntent.Score))
-	entsTbl := luaState.CreateTable(0, 0)
-	i := 1
-	for _, e := range luisResponse.Entities {
-		entTbl := luaState.CreateTable(0, 0)
-		luaState.RawSet(entTbl, lua.LString("entity"), lua.LString(e.Entity))
-		luaState.RawSet(entTbl, lua.LString("type"), lua.LString(e.Type))
-		luaState.RawSet(entTbl, lua.LString("score"), lua.LNumber(e.Score))
-		luaState.RawSetInt(entsTbl, i, entTbl)
-		i++
-	}
-	luaState.Push(entsTbl)
-	return 3
-}
-
 // luaLibRandom provides access to cryptographic random numbers in Lua
 func (b *BananaBoatBot) luaLibRandom(luaState *lua.LState) int {
 	// First argument should be int for upper bound (probably at least 1)
@@ -976,8 +844,6 @@ func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	// Create map of function names to functions
 	exports := map[string]lua.LGFunction{
 		"get_title":    b.luaLibGetTitle,
-		"luis_predict": b.luaLibLuisPredict,
-		"owm":          b.luaLibOpenWeatherMap,
 		"random":       b.luaLibRandom,
 		"sleep":        b.luaLibSleep,
 		"worker":       b.luaLibWorker,
@@ -996,14 +862,10 @@ type BananaBoatBotConfig struct {
 	LuaFile string
 	// Shall we log each received command or not
 	LogCommands bool
-	// Format String for Luis.ai URL
-	LuisURLTemplate string
 	// Maximum reconnect interval in seconds
 	MaxReconnect int
 	// NewIrcServer creates a new irc server
 	NewIrcServer func(parentCtx context.Context, serverName string, settings *client.IrcServerSettings) (client.IrcServerInterface, context.Context)
-	// Format String for OpenWeathermap URL
-	OwmURLTemplate string
 	// PackageDir is a directory to add to Lua package.path
 	PackageDir string
 }
@@ -1039,14 +901,6 @@ func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua
 
 // NewBananaBoatBot creates a new BananaBoatBot
 func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaBoatBot {
-	// Set default URLs of webservices
-	if len(config.LuisURLTemplate) == 0 {
-		config.LuisURLTemplate = "https://%s.api.cognitive.microsoft.com/luis/v2.0/apps/%s?subscription-key=%s&verbose=false&q=%s"
-	}
-	if len(config.OwmURLTemplate) == 0 {
-		config.OwmURLTemplate = "https://api.openweathermap.org/data/2.5/weather?units=metric&APPID=%s&q=%s"
-	}
-
 	// We require a path to some script to load
 	if len(config.LuaFile) == 0 {
 		log.Fatal("Please specify script using -lua flag")

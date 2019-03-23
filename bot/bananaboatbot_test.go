@@ -3,7 +3,6 @@ package bot_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -126,94 +125,6 @@ func TestRPC(t *testing.T) {
 		if msg.Params[1] != "HI THERE" {
 			t.Fatalf("Got wrong parameters in response1: %s", strings.Join(msg.Params, ","))
 		}
-	}
-}
-
-func TestLuis(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, err := json.Marshal(&bot.LuisResponse{
-			Entities: []bot.LuisEntity{
-				{
-					Entity: "WORLD",
-					Score:  0.5,
-					Type:   "Thing",
-				},
-			},
-			TopScoringIntent: bot.LuisTopScoringIntent{
-				Intent: "Hello",
-				Score:  0.5,
-			},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-type", "application/json")
-		w.Write(b)
-	}))
-	defer ts.Close()
-	ctx := context.TODO()
-	cfg := stdConfig
-	cfg.LuaFile = "../test/luis.lua"
-	cfg.LuisURLTemplate = fmt.Sprintf("%s?region=%%s&appid=%%s&key=%%s&utterance=%%s", ts.URL)
-	b := bot.NewBananaBoatBot(ctx, &cfg)
-	defer b.Close(ctx)
-	// Say hello
-	b.HandleHandlers(ctx, "test", &irc.Message{
-		Command: irc.PRIVMSG,
-		Params:  []string{"testbot1", "HELLO"},
-	})
-	svrI, _ := b.Servers.Load("test")
-	messages := svrI.(client.IrcServerInterface).GetMessages()
-	msg := <-messages
-	if msg.Command != irc.PRIVMSG {
-		t.Fatalf("Got wrong message type in response: %s", msg.Command)
-	}
-	if msg.Params[1] != "howdy WORLD" &&
-		msg.Params[1] != "hey WORLD" &&
-		msg.Params[1] != "hi WORLD" {
-		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
-	}
-}
-
-func TestOwm(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, err := json.Marshal(&bot.OWMResponse{
-			Conditions: []bot.OWMCondition{
-				{
-					Description: "clear sky",
-				},
-			},
-			Main: bot.OWMMain{
-				Temperature: 21.3,
-			},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-type", "application/json")
-		w.Write(b)
-	}))
-	defer ts.Close()
-	ctx := context.TODO()
-	cfg := stdConfig
-	cfg.LuaFile = "../test/owm.lua"
-	cfg.OwmURLTemplate = fmt.Sprintf("%s?appid=%%s&query=%%s", ts.URL)
-
-	b := bot.NewBananaBoatBot(ctx, &cfg)
-	defer b.Close(ctx)
-	// Say weather
-	b.HandleHandlers(ctx, "test", &irc.Message{
-		Command: irc.PRIVMSG,
-		Params:  []string{"testbot1", "weather"},
-	})
-	svrI, _ := b.Servers.Load("test")
-	messages := svrI.(client.IrcServerInterface).GetMessages()
-	msg := <-messages
-	if msg.Command != irc.PRIVMSG {
-		t.Fatalf("Got wrong message type in response: %s", msg.Command)
-	}
-	if msg.Params[1] != "21°, clear sky" {
-		t.Fatalf("Got wrong parameters in response: %s", strings.Join(msg.Params, ","))
 	}
 }
 
