@@ -89,6 +89,10 @@ func main() {
 			return
 		}
 	})
+	// unrequire unloads Lua libraries
+	http.HandleFunc("/unrequire", func(w http.ResponseWriter, r *http.Request) {
+		b.Unrequire(ctx)
+	})
 	// log displays the log ringbuffer
 	http.HandleFunc("/log", func(w http.ResponseWriter, r *http.Request) {
 		w.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}

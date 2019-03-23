@@ -14,7 +14,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/bananaboatbot/bananaboatbot/client"
 	"github.com/bananaboatbot/bananaboatbot/glua/rate"
@@ -681,6 +683,26 @@ func (b *BananaBoatBot) ReloadLua(ctx context.Context) error {
 	b.setWebFromLua(ctx, tbl)
 
 	return nil
+}
+
+// Unrequire ensures that Lua libraries are reloaded
+func (b *BananaBoatBot) Unrequire(ctx context.Context) {
+	// Set package.loaded[foo] = nil for all packages in shared state
+	b.luaMutex.Lock()
+	t := b.luaState.GetGlobal("package").(*lua.LTable).RawGet(lua.LString("loaded")).(*lua.LTable)
+	t.ForEach(func(index lua.LValue, paramL lua.LValue) {
+		b.luaState.RawSet(t, index, lua.LNil)
+	})
+	b.luaMutex.Unlock()
+	// Recreate lua Pool
+	newPool := sync.Pool{
+		New: func() interface{} {
+			return b.newLuaState(ctx, b.Config.PackageDir)
+		},
+	}
+	oldPoolPtr := unsafe.Pointer(&b.luaPool)
+	newPoolPtr := unsafe.Pointer(&newPool)
+	atomic.SwapPointer(&oldPoolPtr, newPoolPtr)
 }
 
 // luaLibRandom provides access to cryptographic random numbers in Lua
