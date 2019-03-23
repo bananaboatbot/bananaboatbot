@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,11 +18,13 @@ import (
 
 	"github.com/bananaboatbot/bananaboatbot/client"
 	"github.com/bananaboatbot/bananaboatbot/glua/rate"
+	"github.com/bananaboatbot/bananaboatbot/resources"
 	"github.com/bananaboatbot/bananaboatbot/util"
 	"github.com/bananaboatbot/gluahttp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
+
 	irc "gopkg.in/sorcix/irc.v2"
 	luajson "layeh.com/gopher-json"
 )
@@ -42,6 +45,8 @@ type BananaBoatBot struct {
 	handlersMutex sync.RWMutex
 	// httpClient is used for HTTP requests
 	httpClient http.Client
+	// luaDirectory contains path to Lua libraries for adding to package.path
+	luaDirectory string
 	// luaMutex protects shared Lua state
 	luaMutex sync.Mutex
 	// luaPool is a pool for when shared state is undesirable
@@ -843,10 +848,10 @@ func (b *BananaBoatBot) luaLibGetTitle(luaState *lua.LState) int {
 func (b *BananaBoatBot) luaLibLoader(luaState *lua.LState) int {
 	// Create map of function names to functions
 	exports := map[string]lua.LGFunction{
-		"get_title":    b.luaLibGetTitle,
-		"random":       b.luaLibRandom,
-		"sleep":        b.luaLibSleep,
-		"worker":       b.luaLibWorker,
+		"get_title": b.luaLibGetTitle,
+		"random":    b.luaLibRandom,
+		"sleep":     b.luaLibSleep,
+		"worker":    b.luaLibWorker,
 	}
 	// Convert map to Lua table and push to stack
 	mod := luaState.SetFuncs(luaState.NewTable(), exports)
@@ -883,18 +888,24 @@ func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua
 	// Register ratelimiter in Lua
 	rate.RegisterGlobals(luaState)
 
-	// Tamper package.path according to configuration
+	// Tamper package.path according to configuration...
+	// Get "package" global
+	t := luaState.GetGlobal("package").(*lua.LTable)
+	// Get "path" from package table
+	lPath := lua.LString("path")
+	s := luaState.RawGet(t, lPath).(lua.LString).String()
+	// Create list of elements to join for new package path
+	elems := []string{s}
 	if len(packageDir) > 0 {
-		// Get "package" global
-		t := luaState.GetGlobal("package").(*lua.LTable)
-		// Get "path" from package table
-		lPath := lua.LString("path")
-		s := luaState.RawGet(t, lPath).(lua.LString).String()
-		// Set new package.path
-		luaState.RawSet(t, lPath, lua.LString(strings.Join([]string{s, packageDir}, ";")))
-		// Clear stack
-		luaState.SetTop(0)
+		elems = append(elems, packageDir)
 	}
+	if len(b.luaDirectory) > 0 {
+		elems = append(elems, b.luaDirectory)
+	}
+	// Set new package.path
+	luaState.RawSet(t, lPath, lua.LString(strings.Join(elems, ";")))
+	// Clear stack
+	luaState.SetTop(0)
 
 	return luaState
 }
@@ -917,6 +928,13 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 		web:      make(map[string]BananaBoatBotWebFunc),
 	}
 
+	resourcesDir, err := resources.GetResourcesDirectory()
+	if err == nil {
+		b.luaDirectory = path.Join(resourcesDir, "lua", "?.lua")
+	} else {
+		log.Printf("Failed to get resources directory: %s", err)
+	}
+
 	// Create new shared Lua state
 	b.luaState = b.newLuaState(ctx, config.PackageDir)
 
@@ -933,7 +951,7 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 	}
 
 	// Call Lua script and process result
-	err := b.ReloadLua(ctx)
+	err = b.ReloadLua(ctx)
 	if err != nil {
 		log.Printf("Lua error: %s", err)
 	}

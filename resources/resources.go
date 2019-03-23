@@ -1,4 +1,4 @@
-package main
+package resources
 
 import (
 	"archive/tar"
@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	MajorVersion       = "v2"
 	releaseURLTemplate = "https://api.github.com/repos/bananaboatbot/resources.%s/releases/latest"
 	keyringData        = `-----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -84,11 +85,17 @@ type githubAsset struct {
 	DownloadURL string `json:"browser_download_url"`
 }
 
-func getResources() {
-	// Create resources directory if necessary
-	resourcesDir, err := createResourcesDirectory()
+func GetResources() {
+	// Get resources directory
+	resourcesDir, err := GetResourcesDirectory()
 	if err != nil {
-		log.Printf("Couldn't create temporary directory: %s", err)
+		log.Printf("Couldn't get temporary directory: %s", err)
+		return
+	}
+	// Create resources directory if necessary
+	err = os.MkdirAll(resourcesDir, 0700)
+	if err != nil {
+		log.Printf("Couldn't create resources directory: %s", err)
 		return
 	}
 	// Create temporary directory for downloads
@@ -103,7 +110,7 @@ func getResources() {
 		Timeout: time.Second * 60,
 	}
 	// Get latest tarball & signature URLs
-	urlList, err := getDownloadURLs(client)
+	urlList, err, tagName := getDownloadURLs(client)
 	if err != nil {
 		log.Printf("Couldn't get download URLs: %s", err)
 		return
@@ -126,21 +133,20 @@ func getResources() {
 	err = installResources(urlList[0], resourcesDir)
 	if err != nil {
 		log.Printf("Failed to install resources: %s", err)
+		return
 	}
+	log.Printf("Installed resources %s", tagName)
 }
 
-// createResourcesDirectory creates and returns our resources directory
-func createResourcesDirectory() (string, error) {
+// GetResourcesDirectory returns our resources directory
+func GetResourcesDirectory() (string, error) {
 	// Get user cache directory...
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
 	// Construct our directory relative to cache directory
-	resourcesDir := path.Join(cacheDir, "bananaboatbot")
-	// Create the directory
-	err = os.MkdirAll(resourcesDir, 0700)
-	return resourcesDir, err
+	return path.Join(cacheDir, "bananaboatbot"), nil
 }
 
 // trimPath removes the first element from the path
@@ -258,29 +264,29 @@ func downloadToDirectory(client *http.Client, dir string, dl string) (string, er
 	return name, err
 }
 
-// getDownloadURLs returns tarball URL & signature URL or error
-func getDownloadURLs(client *http.Client) ([]string, error) {
+// getDownloadURLs returns tarball URL & signature URL or error + TagName
+func getDownloadURLs(client *http.Client) ([]string, error, string) {
 	// Make list of two URLs to return
 	downloadURLs := make([]string, 2)
 	// Construct URL for metainformation about latest release
-	releaseURL := fmt.Sprintf(releaseURLTemplate, majorVersion)
+	releaseURL := fmt.Sprintf(releaseURLTemplate, MajorVersion)
 	// Create structure to decode JSON into
 	release := githubRelease{}
 	// Create HTTP request
 	req, err := http.NewRequest("GET", releaseURL, nil)
 	if err != nil {
-		return downloadURLs, err
+		return downloadURLs, err, ""
 	}
 	// Send request
 	res, err := client.Do(req)
 	if err != nil {
-		return downloadURLs, err
+		return downloadURLs, err, ""
 	}
 	// Decode response
 	dec := json.NewDecoder(res.Body)
 	err = dec.Decode(&release)
 	if err != nil {
-		return downloadURLs, err
+		return downloadURLs, err, ""
 	}
 	// Set URL of tarball to result
 	downloadURLs[0] = release.TarballURL
@@ -295,7 +301,7 @@ func getDownloadURLs(client *http.Client) ([]string, error) {
 	}
 	// Return error if we didn't find a signature
 	if len(downloadURLs[1]) == 0 {
-		return downloadURLs, fmt.Errorf("Couldn't find asset named %s", wantFile)
+		return downloadURLs, fmt.Errorf("Couldn't find asset named %s", wantFile), release.TagName
 	}
-	return downloadURLs, nil
+	return downloadURLs, nil, release.TagName
 }

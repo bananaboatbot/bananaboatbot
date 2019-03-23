@@ -11,17 +11,18 @@ import (
 	"github.com/bananaboatbot/bananaboatbot/bot"
 	"github.com/bananaboatbot/bananaboatbot/client"
 	blog "github.com/bananaboatbot/bananaboatbot/log"
+	"github.com/bananaboatbot/bananaboatbot/resources"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
 	defaultIrcPort = 6667
-	majorVersion   = "v2"
 )
 
 func main() {
 	// Set up and parse commandline flags
+	downloadResources := flag.Bool("download-resources", false, "Install latest resource files and exit")
 	luaFile := flag.String("lua", "", "Path to Lua script")
 	logCommands := flag.Bool("log-commands", false, "Log commands received from servers")
 	maxReconnect := flag.Int("max-reconnect", 3600, "Maximum reconnect interval in seconds")
@@ -30,6 +31,11 @@ func main() {
 	version := flag.Bool("version", false, "Print version number & exit")
 	webAddr := flag.String("addr", "localhost:9781", "Listening address for WebUI")
 	flag.Parse()
+
+	if *downloadResources {
+		resources.GetResources()
+		return
+	}
 
 	if *version {
 		printVersion()
