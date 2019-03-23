@@ -79,6 +79,7 @@ type BananaBoatBotMetrics struct {
 
 // BananaBoatBotWebFunc contains RPC functions defined in Lua
 type BananaBoatBotWebFunc struct {
+	CollectHeaders   bool
 	Function         *lua.LFunction
 	FunctionProto    *lua.FunctionProto
 	ParseJsonBody    bool
@@ -268,8 +269,8 @@ func (b *BananaBoatBot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		luaFunction = state.NewFunctionFromProto(webFunc.FunctionProto)
 	}
 
-	// Create list of values to return
-	luaParams := make([]lua.LValue, 2)
+	// Create table to pass to function
+	tbl := state.CreateTable(0, 0)
 
 	// Add parsed query string or nil according to configuration
 	if webFunc.ParseQueryString {
@@ -282,32 +283,36 @@ func (b *BananaBoatBot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			state.RawSet(queryTbl, lua.LString(label), lValues)
 		}
-		luaParams[0] = queryTbl
-	} else {
-		luaParams[0] = lua.LNil
+		state.RawSet(tbl, lua.LString("query"), queryTbl)
 	}
 
 	// Try parse JSON body according to configuration
 	if webFunc.ParseJsonBody {
-		if r.Body == nil {
-			luaParams[1] = lua.LNil
+		dec := json.NewDecoder(r.Body)
+		jsonMap := make(map[string]interface{})
+		err := dec.Decode(&jsonMap)
+		if err != nil {
+			log.Printf("Error parsing JSON body for %s: %s", name, err)
 		} else {
-			dec := json.NewDecoder(r.Body)
-			jsonMap := make(map[string]interface{})
-			err := dec.Decode(&jsonMap)
-			if err != nil {
-				log.Printf("Error parsing JSON body for %s: %s", name, err)
-				luaParams[1] = lua.LNil
-			} else {
-				jsonTbl := state.CreateTable(0, 0)
-				for key, value := range jsonMap {
-					jsonTbl.RawSetString(key, luajson.DecodeValue(state, value))
-				}
-				luaParams[1] = jsonTbl
+			jsonTbl := state.CreateTable(0, 0)
+			for key, value := range jsonMap {
+				jsonTbl.RawSetString(key, luajson.DecodeValue(state, value))
 			}
+			state.RawSet(tbl, lua.LString("json"), jsonTbl)
 		}
-	} else {
-		luaParams[1] = lua.LNil
+	}
+
+	// Add headers to request according to configuration
+	if webFunc.CollectHeaders {
+		headersTbl := state.CreateTable(0, 0)
+		for k, l := range r.Header {
+			hdrList := state.CreateTable(0, 0)
+			for _, v := range l {
+				hdrList.Append(lua.LString(v))
+			}
+			state.RawSet(headersTbl, lua.LString(k), hdrList)
+		}
+		state.RawSet(tbl, lua.LString("headers"), headersTbl)
 	}
 
 	// Call function
@@ -315,7 +320,7 @@ func (b *BananaBoatBot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Fn:      luaFunction,
 		NRet:    1,
 		Protect: true,
-	}, luaParams...)
+	}, tbl)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -532,18 +537,12 @@ func (b *BananaBoatBot) createWebFuncFromTable(name string, webSettingsLV lua.LV
 		return nil
 	}
 
-	// Get bool from 'use_shared_state' key (default false)
 	useSharedState := util.BoolFromTable(webSettings, "use_shared_state", false)
 
-	// Get bool from 'parse_query_string' key (default true)
-	parseQueryString := util.BoolFromTable(webSettings, "parse_query_string", true)
-
-	// Get bool from 'parse_json_body' key (default false)
-	parseJsonBody := util.BoolFromTable(webSettings, "parse_json_body", false)
-
 	ourWebFunc := BananaBoatBotWebFunc{
-		ParseJsonBody:    parseJsonBody,
-		ParseQueryString: parseQueryString,
+		CollectHeaders:   util.BoolFromTable(webSettings, "collect_headers", true),
+		ParseJsonBody:    util.BoolFromTable(webSettings, "parse_json_body", false),
+		ParseQueryString: util.BoolFromTable(webSettings, "parse_query_string", true),
 		UseSharedState:   useSharedState,
 	}
 
