@@ -177,7 +177,7 @@ func (s *IrcServer) Dial(ctx context.Context) {
 				}
 			default:
 				// Invoke callback to handle input
-				go s.Settings.InputCallback(ctx, s.name, msg)
+				s.Settings.InputCallback(ctx, s.name, msg)
 			}
 		}
 	}()
