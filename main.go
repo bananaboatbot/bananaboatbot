@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 
 	"github.com/bananaboatbot/bananaboatbot/bot"
 	"github.com/bananaboatbot/bananaboatbot/client"
@@ -117,6 +118,13 @@ func main() {
 	http.Handle("/metrics", promhttp.Handler())
 	// rpc/foo calls functions defined in Lua
 	http.Handle("/rpc/", b)
+	// root handler displays webui
+	resourcesDir, err := resources.GetResourcesDirectory()
+	if err == nil {
+		http.Handle("/", http.FileServer(http.Dir(path.Join(resourcesDir, "webui"))))
+	} else {
+		log.Printf("Error getting resources directory: %s", err)
+	}
 	// Start webserver
 	go http.ListenAndServe(*webAddr, nil)
 
