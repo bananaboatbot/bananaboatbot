@@ -23,7 +23,7 @@ type IrcServerInterface interface {
 	GetMessages() chan irc.Message
 	GetReconnectExp() *uint64
 	SetReconnectExp(val uint64)
-	ReconnectWait(ctx context.Context)
+	ReconnectWait(ctx context.Context, name string)
 	Done() <-chan struct{}
 }
 
@@ -124,10 +124,10 @@ func (s *IrcServer) sendMessages(ctx context.Context) {
 }
 
 // ReconnectWait waits / backs off
-func (s *IrcServer) ReconnectWait(ctx context.Context) {
+func (s *IrcServer) ReconnectWait(ctx context.Context, name string) {
 	atomic.AddUint64(s.reconnectExp, 1)
 	p := s.Settings.MaxReconnect * math.Tanh(float64(*s.reconnectExp)/1000.0)
-	log.Printf("Sleeping for %.1f seconds before attempting reconnect", p)
+	log.Printf("[%s] Sleeping for %.1f seconds before attempting reconnect", name, p)
 	<-time.After(time.Duration(p) * time.Second)
 }
 

@@ -90,7 +90,7 @@ func main() {
 			return
 		}
 	})
-	// unrequire unloads Lua libraries
+	// unrequire forces Lua libraries to be reloaded
 	http.HandleFunc("/unrequire", func(w http.ResponseWriter, r *http.Request) {
 		b.Unrequire(ctx)
 	})

@@ -91,7 +91,7 @@ func (m *MockIrcServer) Close(parentCtx context.Context) {
 }
 
 // ReconnectWait does nothing
-func (m *MockIrcServer) ReconnectWait(parentCtx context.Context) {
+func (m *MockIrcServer) ReconnectWait(parentCtx context.Context, name string) {
 }
 
 // GetSettings returns the settings of the MockIrcServer

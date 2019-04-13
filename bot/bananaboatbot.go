@@ -41,6 +41,10 @@ type BananaBoatBot struct {
 	curNet string
 	// curMessage is set to the message being handled
 	curMessage *irc.Message
+	// defaults contains (possibly overridden) default settings for the bot
+	defaults map[string]string
+	// defaultsWeb contains (possibly overridden) settings for web functions
+	defaultsWeb map[string]bool
 	// handlers is a map of IRC command names to Lua functions
 	handlers map[string]*lua.LFunction
 	// handlersMutex protects the handlers map
@@ -55,12 +59,6 @@ type BananaBoatBot struct {
 	luaPool sync.Pool
 	// luaState contains shared Lua state
 	luaState *lua.LState
-	// nick is the default nick of the bot
-	nick string
-	// realname is the default "real name" of the bot
-	realname string
-	// username is the default username of the bot
-	username string
 	// servers is a map of friendly names to IRC servers
 	Servers sync.Map
 	// mutex for handling of server reconnecting
@@ -70,6 +68,14 @@ type BananaBoatBot struct {
 	// Mutex protecting web map
 	webMutex sync.RWMutex
 }
+
+var (
+	basicServerSettingStringKeys = []string{
+		"nick",
+		"realname",
+		"username",
+	}
+)
 
 // BananaBoatBotMetrics contains performance metrics
 type BananaBoatBotMetrics struct {
@@ -400,7 +406,7 @@ func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err er
 	newSvr.SetReconnectExp(*(s.GetReconnectExp()))
 	b.Servers.Store(svrName, newSvr)
 	b.serverReconnectMutex.Unlock()
-	newSvr.ReconnectWait(svrCtx)
+	newSvr.ReconnectWait(svrCtx, svrName)
 	b.serverReconnectMutex.Lock()
 	newSvr.Dial(svrCtx)
 	b.serverReconnectMutex.Unlock()
@@ -408,22 +414,54 @@ func (b *BananaBoatBot) HandleErrors(ctx context.Context, svrName string, err er
 
 // Set default values from table returned by Lua
 func (b *BananaBoatBot) setDefaultsFromLua(ctx context.Context, tbl *lua.LTable) {
-	lv := tbl.RawGetString("nick")
-	nick := lua.LVAsString(lv)
-	if len(nick) > 0 {
-		b.nick = nick
+
+	b.defaults = map[string]string{
+		"nick":     "BananaBoatBot",
+		"realname": "Banana Boat Bot",
+		"username": "bananarama",
 	}
 
-	lv = tbl.RawGetString("realname")
-	realname := lua.LVAsString(lv)
-	if len(realname) > 0 {
-		b.realname = realname
+	lv := tbl.RawGetString("defaults")
+	if lv.Type() == lua.LTNil {
+		return
+	}
+	defaultsTbl, ok := lv.(*lua.LTable)
+	if !ok {
+		log.Printf("lua reload error: unexpected defaults type: %s", lv.Type())
+		return
 	}
 
-	lv = tbl.RawGetString("username")
-	username := lua.LVAsString(lv)
-	if len(username) > 0 {
-		b.username = username
+	// Override settings in b.defaults with user-supplied values in defaultsTbl
+	for _, k := range basicServerSettingStringKeys {
+		util.SetStringToMapFromTable(b.defaults, defaultsTbl, k)
+	}
+
+	b.setWebDefaultsFromLua(ctx, defaultsTbl)
+	// XXX: defaults for handlers similar to web
+}
+
+func (b *BananaBoatBot) setWebDefaultsFromLua(ctx context.Context, tbl *lua.LTable) {
+	// Set default values
+	b.defaultsWeb = map[string]bool{
+		"parse_json_body":    false,
+		"parse_query_string": true,
+		"use_shared_state":   false,
+	}
+
+	// Get 'web' table from 'defaults' if available
+	lv := tbl.RawGetString("web")
+	lType := lv.Type()
+	if lType != lua.LTTable {
+		if lType != lua.LTNil {
+			log.Printf("lua reload error: unexpected defaults.web type: %s", lv.Type())
+		}
+		return
+	}
+
+	// Override defaults with user-supplied values if present
+	webDefaultsTbl := lv.(*lua.LTable)
+	for k := range b.defaultsWeb {
+		util.SetBoolToMapFromTable(b.defaultsWeb, webDefaultsTbl, k)
 	}
 }
 
@@ -501,8 +539,18 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 	webTbl.ForEach(func(nameLV lua.LValue, webSettingsLV lua.LValue) {
 		// Use name from key in the parent table
 		name := lua.LVAsString(nameLV)
-		// Create BananaBoatWebFunc from nested table
-		ourWebFunc := b.createWebFuncFromTable(name, webSettingsLV)
+		// Create BananaBoatWebFunc from nested table or function
+		lvType := webSettingsLV.Type()
+		var ourWebFunc *BananaBoatBotWebFunc
+		switch lvType {
+		case lua.LTTable:
+			ourWebFunc = b.createWebFuncFromTable(name, webSettingsLV.(*lua.LTable))
+		case lua.LTFunction:
+			ourWebFunc = b.createWebFuncFromFunction(name, webSettingsLV.(*lua.LFunction))
+		default:
+			log.Printf("lua reload error: unexpected type at web:%s (%s)", name, lvType)
+			return
+		}
 		if ourWebFunc == nil {
 			return
 		}
@@ -520,14 +568,25 @@ func (b *BananaBoatBot) setWebFromLua(ctx context.Context, tbl *lua.LTable) {
 	}
 }
 
-func (b *BananaBoatBot) createWebFuncFromTable(name string, webSettingsLV lua.LValue) *BananaBoatBotWebFunc {
+func (b *BananaBoatBot) createWebFuncFromFunction(name string, webFunc *lua.LFunction) *BananaBoatBotWebFunc {
 
-	// Get nested table
-	webSettings, ok := webSettingsLV.(*lua.LTable)
-	if !ok {
-		log.Printf("found unexpected type inside web: %s", webSettingsLV.Type())
-		return nil
+	ourWebFunc := BananaBoatBotWebFunc{
+		CollectHeaders:   b.defaultsWeb["collect_headers"],
+		ParseJsonBody:    b.defaultsWeb["parse_json_body"],
+		ParseQueryString: b.defaultsWeb["parse_query_string"],
+		UseSharedState:   b.defaultsWeb["use_shared_state"],
 	}
+
+	if ourWebFunc.UseSharedState {
+		ourWebFunc.Function = webFunc
+	} else {
+		ourWebFunc.FunctionProto = webFunc.Proto
+	}
+
+	return &ourWebFunc
+}
+
+func (b *BananaBoatBot) createWebFuncFromTable(name string, webSettings *lua.LTable) *BananaBoatBotWebFunc {
 
 	// Get function from 'func' key
 	lv := webSettings.RawGetString("func")
@@ -537,12 +596,12 @@ func (b *BananaBoatBot) createWebFuncFromTable(name string, webSettingsLV lua.LV
 		return nil
 	}
 
-	useSharedState := util.BoolFromTable(webSettings, "use_shared_state", false)
+	useSharedState := util.BoolFromTable(webSettings, "use_shared_state", b.defaultsWeb["use_shared_state"])
 
 	ourWebFunc := BananaBoatBotWebFunc{
-		CollectHeaders:   util.BoolFromTable(webSettings, "collect_headers", true),
-		ParseJsonBody:    util.BoolFromTable(webSettings, "parse_json_body", false),
-		ParseQueryString: util.BoolFromTable(webSettings, "parse_query_string", true),
+		CollectHeaders:   util.BoolFromTable(webSettings, "collect_headers", b.defaultsWeb["collect_headers"]),
+		ParseJsonBody:    util.BoolFromTable(webSettings, "parse_json_body", b.defaultsWeb["parse_json_body"]),
+		ParseQueryString: util.BoolFromTable(webSettings, "parse_query_string", b.defaultsWeb["parse_query_string"]),
 		UseSharedState:   useSharedState,
 	}
 
@@ -577,15 +636,23 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 			return
 		}
 
-		// Defaults
-		nick := b.nick
+		// FIXME? - Defaults
 		portInt := b.Config.DefaultIrcPort
-		realname := b.realname
-		username := b.username
 
 		// Get 'server' string from table
 		lv = serverSettings.RawGetString("server")
 		host := lua.LVAsString(lv)
+
+		// Get basic settings from table - use defaults if unavailable
+		basicSettings := make(map[string]string)
+		for _, k := range basicServerSettingStringKeys {
+			lv = serverSettings.RawGetString(k)
+			if ls, ok := lv.(lua.LString); ok {
+				basicSettings[k] = lua.LVAsString(ls)
+			} else {
+				basicSettings[k] = b.defaults["nick"]
+			}
+		}
 
 		// Get 'tls' bool from table (default false)
 		tls := util.BoolFromTable(serverSettings, "tls", false)
@@ -599,24 +666,6 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 			portInt = int(port)
 		}
 
-		// Get 'nick' from table - use default if unavailable
-		lv = serverSettings.RawGetString("nick")
-		if ls, ok := lv.(lua.LString); ok {
-			nick = lua.LVAsString(ls)
-		}
-
-		// Get 'realname' from table - use default if unavailable
-		lv = serverSettings.RawGetString("realname")
-		if ls, ok := lv.(lua.LString); ok {
-			realname = lua.LVAsString(ls)
-		}
-
-		// Get 'username' from table - use default if unavailable
-		lv = serverSettings.RawGetString("username")
-		if ls, ok := lv.(lua.LString); ok {
-			username = lua.LVAsString(ls)
-		}
-
 		// Remember we found this key so we can delete unused servers later
 		serverNameStr := lua.LVAsString(serverName)
 		luaServerNames[serverNameStr] = struct{}{}
@@ -626,9 +675,9 @@ func (b *BananaBoatBot) setServersFromLua(ctx context.Context, tbl *lua.LTable) 
 				Port:      portInt,
 				TLS:       tls,
 				VerifyTLS: verifyTLS,
-				Nick:      nick,
-				Realname:  realname,
-				Username:  username,
+				Nick:      basicSettings["nick"],
+				Realname:  basicSettings["realname"],
+				Username:  basicSettings["username"],
 			},
 			MaxReconnect:  float64(b.Config.MaxReconnect),
 			ErrorCallback: b.HandleErrors,
@@ -943,9 +992,6 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 		Config:   config,
 		Metrics:  new(BananaBoatBotMetrics),
 		handlers: make(map[string]*lua.LFunction),
-		nick:     "BananaBoatBot",
-		realname: "Banana Boat Bot",
-		username: "bananarama",
 		web:      make(map[string]BananaBoatBotWebFunc),
 	}
 

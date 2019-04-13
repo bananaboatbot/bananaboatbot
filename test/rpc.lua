@@ -1,8 +1,7 @@
 local bot = require 'trivial1'
 bot.handlers.PRIVMSG = nil
 bot.web = {}
-local handle_hello = {}
-handle_hello.func = function(d)
+handle_hello = function(d)
   return {
     {net = 'test', command = 'PRIVMSG', params = {'foo', d.query['p1'][1]}}
   }

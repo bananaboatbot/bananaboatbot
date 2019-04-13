@@ -1,7 +1,7 @@
 local bot = require 'trivial1'
 local bb = require 'bananaboat'
 bot.handlers.PRIVMSG = function(net, nick, user, host, channel, message)
-  if channel ~= bot.nick then return end
+  if channel ~= bot.defaults.nick then return end
   bb.worker(function() end)
   bb.worker(function(message, botnick)
     local choices = {
@@ -24,6 +24,6 @@ bot.handlers.PRIVMSG = function(net, nick, user, host, channel, message)
     end
     local greet = choices[bb.random(#choices)]
     return { {command = 'PRIVMSG', params = {botnick, string.format('%s %s', greet, entity)}} }
-  end, message, bot.nick)
+  end, message, bot.defaults.nick)
 end
 return bot

@@ -1,5 +1,5 @@
 local bot = require 'trivial1'
-local botnick = bot.nick
+local botnick = bot.defaults.nick
 -- Make it say GOODBYE instead of HELLO
 bot.handlers.PRIVMSG = function(net, nick, user, host, channel, message)
   if channel ~= botnick then return end

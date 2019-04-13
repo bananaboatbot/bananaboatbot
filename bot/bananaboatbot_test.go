@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -176,7 +177,7 @@ func TestHandleServerError(t *testing.T) {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 				return
 			}
 			conn.Close()

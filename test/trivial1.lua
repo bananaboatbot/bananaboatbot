@@ -12,7 +12,9 @@ bot.servers = {
     server = 'localhost',
   },
 }
-bot.nick = botnick
-bot.username = 'a'
-bot.realname = 'e'
+bot.defaults = {
+  nick = botnick,
+  username = 'a',
+  realname = 'e',
+}
 return bot

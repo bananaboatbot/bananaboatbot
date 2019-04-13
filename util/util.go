@@ -20,3 +20,27 @@ func BoolFromTable(table *lua.LTable, key string, defaultTrue bool) bool {
 		return true
 	}
 }
+
+func SetBoolToMapFromTable(bmap map[string]bool, tbl *lua.LTable, key string) bool {
+	lv := tbl.RawGetString(key)
+	if lv.Type() != lua.LTBool {
+		return false
+	}
+	b := lv.(lua.LBool)
+	if b == lua.LTrue {
+		bmap[key] = true
+	} else {
+		bmap[key] = false
+	}
+	return true
+}
+
+func SetStringToMapFromTable(smap map[string]string, tbl *lua.LTable, key string) bool {
+	lv := tbl.RawGetString(key)
+	s := lua.LVAsString(lv)
+	if len(s) > 0 {
+		smap[key] = s
+		return true
+	}
+	return false
+}
