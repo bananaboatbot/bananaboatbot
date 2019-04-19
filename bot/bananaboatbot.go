@@ -27,6 +27,7 @@ import (
 	"github.com/yuin/gopher-lua"
 	"golang.org/x/net/html"
 
+	luamap "github.com/bananaboatbot/bananaboatbot/glua/map"
 	irc "gopkg.in/sorcix/irc.v2"
 	luajson "layeh.com/gopher-json"
 )
@@ -45,6 +46,8 @@ type BananaBoatBot struct {
 	defaults map[string]string
 	// defaultsWeb contains (possibly overridden) settings for web functions
 	defaultsWeb map[string]bool
+	// gluaMap is a shared map accessible from Lua
+	gluaMap *luamap.GluaMap
 	// handlers is a map of IRC command names to Lua functions
 	handlers map[string]*lua.LFunction
 	// handlersMutex protects the handlers map
@@ -955,6 +958,7 @@ func (b *BananaBoatBot) newLuaState(ctx context.Context, packageDir string) *lua
 	// Provide some third-party libraries
 	luaState.PreloadModule("http", gluahttp.NewHttpModule(&b.httpClient).Loader)
 	luaState.PreloadModule("json", luajson.Loader)
+	luaState.PreloadModule("map", b.gluaMap.Loader)
 	// Register ratelimiter in Lua
 	rate.RegisterGlobals(luaState)
 
@@ -991,6 +995,7 @@ func NewBananaBoatBot(ctx context.Context, config *BananaBoatBotConfig) *BananaB
 	b := BananaBoatBot{
 		Config:   config,
 		Metrics:  new(BananaBoatBotMetrics),
+		gluaMap:  luamap.New(),
 		handlers: make(map[string]*lua.LFunction),
 		web:      make(map[string]BananaBoatBotWebFunc),
 	}
